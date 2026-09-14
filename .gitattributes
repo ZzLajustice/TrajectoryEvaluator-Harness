@@ -1,0 +1,23 @@
+# 统一换行符 —— 仓库内存 LF，检出也 LF。
+#
+# 本机 core.autocrlf=true，不加这个文件的话每次 git add 都会刷
+# "LF will be replaced by CRLF" 警告，且跨平台协作时换行符会漂移。
+# .gitattributes 的优先级高于 core.autocrlf。
+* text=auto eol=lf
+
+# Windows 专属脚本必须是 CRLF，否则 cmd.exe 解析会出问题
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# 二进制文件不做任何换行转换
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.woff  binary
+*.woff2 binary
+
+# 轨迹快照与 cassette 是逐字节对拍用的，禁止任何转换
+*.jsonl text eol=lf
