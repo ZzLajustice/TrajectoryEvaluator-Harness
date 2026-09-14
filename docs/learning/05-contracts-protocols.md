@@ -1,0 +1,78 @@
+# 任务 5：`contracts/protocols.py` 与值对象
+
+> **所属里程碑**：M1 · **前置任务**：任务 4 · **代码位置**：`src/harness/contracts/results.py`、`src/harness/contracts/protocols.py`、`tests/contracts/test_protocols.py`
+
+## 1. 总体目标
+
+把系统里所有**可替换部件**抽象成 `Protocol`（`Tool` / `Executor` / `LLMProvider` / `TrajectoryStore` / `Middleware`），并定下跨部件传递的**值对象**（`ToolCall` / `ToolResult` / `Message` / `LLMRequest` / `LLMResponse`）与**结果模型**（`EvalResult` / `Finding` / `EvidenceRef` / `Usage` / `EvalStatus`）。
+
+要解决的三个问题：
+
+1. **评测器要用 judge，但不能依赖 `core`。** 这是设计文档 §2.3 的依赖倒置：`JudgeClient` 协议在 L0，真实实现在组装层注入，单测注入 `CannedJudge`。没有它，"评测器不依赖 core"与"评测器能用 agent judge"会互相排斥。
+2. **跨包传数据不能传事件对象。** 中间件的输入输出刻意**与事件模型解耦**（代码注释写明）：`ToolCall` / `ToolResult` 是纯 dataclass，不是 pydantic 事件。否则每次调整事件 schema 都会波及中间件。
+3. **`Executor` 必须覆盖文件操作，不能只有进程。** 注释给出了理由：文件操作也要经过 executor，否则将来 Docker 化时文件工具会绕过容器。**隔离边界若不覆盖所有 I/O 形态，就只是个装饰。**
+
+## 2. 实现流程
+
+1. 写 5 个失败测试：`Usage` 加法结合律 / `ToolResult` 能标记 `denied_by` / `Finding` 携带 `EvidenceRef(seq=...)` / `ERROR != FAIL` / `isinstance(FakeTool(), Tool)` 成立
+2. 跑出 `ModuleNotFoundError`（红）
+3. 写 `results.py`（先数据形状）→ 写 `protocols.py`（再行为契约）
+4. 跑 `tests/contracts/` 全绿（9 passed，含任务 4 的 5 条）
+5. commit
+
+顺序理由：**先数据后协议**。Protocol 的方法签名引用的正是这些形状（`invoke(...) -> ToolResult`、`append(event)`、`EvalResult`），形状不定，接口就会边写边改。另外**最后一条测试是本任务的核心验收**：`isinstance(FakeTool(), Tool)` 证明"实现一个协议不需要继承任何基类"——这正是单测能随手注入假实现的前提。
+
+## 3. 具体技术实现
+
+**`@runtime_checkable` 的语义边界**：它只检查**成员是否存在**，不校验签名与注解。所以 `FakeTool` 把 `description` 写成类属性也能通过（任务 7 的 `FinishTool` 则用 property）。这不是缺陷而是刻意的分工：静态检查交给 `pyright`，`runtime_checkable` 只负责"测试里能鸭子类型地注入假实现"。**别把它当类型校验用**，也别在热路径上调用 `isinstance(x, SomeProtocol)`（逐成员 `hasattr` 有开销）。
+
+**值对象用 `@dataclass(slots=True)` 而不是 pydantic**：
+
+| 维度 | pydantic `BaseModel` | `@dataclass(slots=True)` |
+|---|---|---|
+| 校验 | 有 | 无 |
+| 构造开销 | 高（过 validator、建 `__pydantic_fields_set__`） | 低 |
+| 与事件模型关系 | 紧耦合（同属事件 schema 体系） | **刻意解耦** |
+| 用在哪 | 会被持久化的东西（事件、spec、结果） | 热路径上的内部传递（每次工具调用都创建） |
+
+判据：**会被落盘或被外部输入驱动的用 pydantic，纯内部、热路径、结构固定的用 dataclass。** 校验成本应该花在边界（用户输入、外部 API 响应），不该花在系统内部的每一次数据流转上。
+
+**`Usage.__add__` 让成本可聚合**：`(a + b) + c == a + (b + c)` 锁的是**可结合性**——成本会在多个层级聚合（turn → run → eval → suite），若加法不满足结合律，聚合顺序就会影响最终数字，报告失去可比性。把聚合逻辑放进数据本身还有个好处：新增字段（如 `cache_write_tokens`）时只改一处，所有聚合点自动正确。注意聚合的是 provider 上报的实测 usage（tech-stack §4.4：tiktoken 覆盖不了国内模型，偏差可超 30%），不是本地估算。
+
+**`LLMResponse.raw: dict`** 保存 provider 原始响应——**replay 无损性的唯一保证**。抽象层永远会漏建模某些字段，`raw` 是留给未来的逃生舱（与任务 2 的 `attrs` 同一模式）。
+
+**`Message.content: list[dict]` 用 Anthropic 风格 content blocks**（`text` / `tool_use` / `tool_result`）：这是"归一化方向必须是富 → 简"的落点（设计文档 §3.6）。内部用表达能力更强的那个表示，映射到 OpenAI chat 是**可预测的有损**；反过来（简 → 富）会凭空发明结构。
+
+**Protocol 里用字符串前向引用**（`ws: "Workspace"`、`-> "ProcessResult"`）：这些类型定义在 `core/`，L0 不能 import 它们。字符串形式让注解延迟解析，同时保留可读性。
+
+**`TrajectoryStore` 协议带 `flush()`**：不是冗余——Windows 上文件/SQLite 句柄不能被并发关闭（设计文档 §3.7），`close()` 之前必须 flush，所以 flush 必须是一等操作而非实现细节。
+
+## 4. 使用的技术栈简介
+
+| 技术 | 说明 |
+|---|---|
+| `typing.Protocol` + `@runtime_checkable` | PEP 544 结构化子类型。实现方不需要知道契约存在（inspect_ai 的 provider 子类同样不继承我们的任何基类） |
+| `dataclasses`（`slots=True`） | 值对象 |
+| `StrEnum` | `EvalStatus` / `Severity` |
+
+**Protocol vs ABC**：
+
+| | `Protocol`（结构化） | `ABC`（继承式） |
+|---|---|---|
+| 实现方式 | 隐式（有这些方法即可） | 显式 `class X(ABC)` |
+| 跨包协作 | 实现方零依赖 | 实现方必须 import 基类（依赖方向被拉反） |
+| 运行时检查 | 需 `runtime_checkable`，只查成员存在性 | 天然支持，可带实现 |
+
+这里必须选 Protocol：真实实现（`LocalExecutor`、`OpenAICompatProvider`、`FakeProvider`）散落在 `core/` 与 `providers/`，让它们 import `contracts` 没问题，但**契约必须能被不知道实现的测试替身满足**——这正是 ABC 做不到的。
+
+## 5. 工程化思想
+
+**（1）依赖倒置的价值在于让两个正确的要求同时成立。** "高层不依赖低层"与"高层要调用低层"表面矛盾，解法是高层定义接口、低层实现。可迁移的识别信号：**当你想为某个模块加一个"为了测试才存在"的 import 时，那个 import 就该被换成一个协议。**
+
+**（2）契约分两层：数据形状与行为。** 先定形状（dataclass / model），再定行为（Protocol）。形状不稳时接口会反复改，而接口改动会波及所有实现。**顺序不能反。**
+
+**（3）校验成本花在边界，不花在内部热路径。** 对内部类型做全量校验的收益接近零（数据是自己刚构造的），代价是每次调用都付。**判据：数据来源可信吗？不可信（用户、网络、文件）就校验，可信（内部构造）就只保证形状。**
+
+**（4）抽象层要自带逃生舱。** 任何封装都会漏细节（provider 原始响应、未建模字段）。留一个 `raw` / `attrs` 这样的出口，可以让"抽象暂时不够用"不至于演变成"拆掉抽象"。同一模式在任务 2 与这里重复出现，说明它是通用手法而非巧合。
+
+**（5）值对象可加 = 聚合逻辑内聚。** 把 `+` 定义在数据上，调用方就不需要知道"要累加哪些字段"，从而消除"新增字段后忘了更新某个聚合点"这一类 bug——**变更的影响面被限制在一个类里**。

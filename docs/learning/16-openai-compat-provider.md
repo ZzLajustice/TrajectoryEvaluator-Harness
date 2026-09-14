@@ -1,0 +1,101 @@
+# 任务 16：`OpenAICompatProvider`
+
+> **所属里程碑**：M3 · **前置任务**：任务 5（`LLMProvider` 协议与 `LLMRequest` / `LLMResponse` 值对象） · **代码位置**：`src/harness/providers/openai_compat.py`（另建 `src/harness/providers/base.py`）
+
+## 1. 总体目标
+
+用**官方 `openai` SDK** 打通真实模型，一个类覆盖所有 OpenAI 兼容端点（OpenAI / DeepSeek / 通义 / Moonshot / Groq / vLLM / Ollama / OpenRouter），并把厂商响应**归一化**成内部值对象 `LLMResponse`。
+
+它解决的不是"怎么发 HTTP 请求"，而是两个评测 harness 特有的硬需求：
+
+1. **payload 必须精确可见**。评测结论要能追溯到"当时到底发了什么"。任何中间层对参数做的"翻译"，都会让厂商差异消失在看不见的地方——而差异恰恰是评测要观测的对象。
+2. **单测必须完全离线**。真实 API 慢、贵、不可复现；测试一旦联网，就既不是单元测试也不是回归测试。
+
+这两个需求同时排除了两类常见做法：裸 `httpx2` 手写 payload（要自己重造 SDK 的多厂商适配），以及中间抽象层（见 §3）。
+
+## 2. 实现流程
+
+1. **先写失败测试**。测试用一份构造好的 response body + `httpx2.MockTransport`，既断言"归一化后的结果"，也断言"实际发出的 payload"。顺序不能反：只有测试先锁定"归一化后应该长什么样"，实现才有靶子。
+2. **跑测试确认失败**（`ModuleNotFoundError` 或 fixture 缺失）。这一步是防"假绿"——确认测试确实在测东西。
+3. **先写 `providers/base.py` 的 `usage_from_openai`**。它是跨 provider 共享的降级规则（usage 缺失时返回全 0 而不是抛异常），先落地它，provider 本体才有干净的调用点。
+4. **写 provider 本体**：构造 SDK client、组装 payload、归一化响应。
+5. **跑离线单测**：全绿，且**不产生任何网络流量**（`MockTransport` 拦截）。
+6. **手工对真实 API 打样一次**（带 `DEEPSEEK_API_KEY` 跑一段脚本）。这一步必须排在单测之后：它的目的不是"调试实现"，而是"校准 fixture 与现实的差距"——单测里的 body 是手写的，真实端点字段可能有出入。
+7. Commit。
+
+## 3. 具体技术实现
+
+### `http_client=` 是唯一的 transport 注入口
+
+```python
+self._sdk = openai.AsyncOpenAI(api_key=api_key, base_url=base_url,
+                               http_client=self._client)
+```
+
+构造函数接受一个可选的 `httpx2.AsyncClient`，测试时注入 `httpx2.AsyncClient(transport=httpx2.MockTransport(handler))`。**SDK 只暴露这一个 transport 注入口**——这意味着"要 mock 的地方"有且只有一处，且不需要 monkeypatch 任何全局状态，并发测试也不会互相污染。测试里的 handler 顺手把 `json.loads(request.content)` 存进 `captured`，于是"发出的 payload 是什么"变成可断言的事实，而不是靠人读代码确认。
+
+### 为什么不用 litellm：它会把评测要看的东西抹平
+
+| 方案 | 实测事实（tech-stack.md §1） | 判断 |
+|---|---|---|
+| `litellm` | 依赖含 `aiohttp` + `boto3` + `tokenizers` + `tiktoken` 等，且钉 `openai<3` + `httpx<1.0` | 与 `openai` 3.x **硬冲突**（同一环境无法共存） |
+| | 统一抽象层会**抹平厂商差异** | 评测 harness 的核心诉求恰是精确复现 payload |
+| 裸 `httpx2` | — | 只留给少数需手写 payload 的 provider，不做主力 |
+| 官方 `openai` SDK | `base_url` 可配 → 覆盖所有兼容厂商；`http_client=` 可注入 | **采用** |
+
+inspect_ai 的 `deepseek.py` 源码注释直接说明了什么叫"必须逐家处理"：
+
+```python
+DEEPSEEK_TOOL_CHOICE_WARNING = (
+  "Forcing tool use ({choice}) is not supported by {model} while thinking is enabled ...")
+```
+
+这类 quirk（thinking 开启时不支持强制工具调用、不支持 schema 强约束的结构化输出）在统一抽象层里**根本无从表达**——它会被静默降级成"某个参数被忽略"。对应用来说无所谓，对评测来说等于瞎了一只眼。连最主打"多厂商"的 promptfoo 也是走官方 SDK 路线。
+
+### `raw` 是 replay 无损性的唯一保证
+
+```python
+completion = await self._sdk.chat.completions.create(**kwargs)
+raw = completion.model_dump()
+```
+
+SDK 返回的是 pydantic 模型，`model_dump()` 把它变回 dict，**原样**存进 `LLMResponse.raw`（设计文档 §3.1 明确：`LLMResponseEvent.raw` 是 replay 无损性的唯一保证）。归一化后的 `content` / `text` / `tool_calls` 只保留我们**当前认为重要**的字段；当以后需要某个今天被丢掉的字段（厂商特有的 `reasoning_content`、`logprobs`、`system_fingerprint`）时，只有 `raw` 还在。反过来说，如果只存归一化结果，回放出来的轨迹就是"我们的模型"，而不是"厂商的响应"——而后者才是评测对象。
+
+### 归一化方向必须是「富 → 简」
+
+内部用 Anthropic 风格的 content blocks（`text` / `tool_use` / `tool_result`），因为它是表达能力更强的那个。映射到 OpenAI chat 格式是**可预测的有损**：多个 text block 拼成一个字符串、`tool_use` 展开成 `tool_calls[].function`。
+
+反过来（简 → 富）不成立：OpenAI 的 `content: str` 没有信息可以还原出"这里原本有一个独立的 text block"，只能凭空发明结构。**方向选错，adapter 就从纯函数变成了猜测器**，也就无法对着固定 JSON 快照单测。
+
+### 容易踩的坑
+
+- **模型返回坏 JSON 不能崩 run**。工具参数是模型生成的字符串，`_parse_arguments("{not json")` 必须降级成 `{}`，而不是让整个 run 挂在 `JSONDecodeError` 上——评测里"模型输出畸形"本身就是一种要被记录的失败模式，不是 harness 的崩溃。
+- **`usage` 缺失是常态**，不是异常。`usage_from_openai` 对缺失/部分缺失一律降级为 0，绝不抛异常。
+- **不要下发用户没要求的参数**。`temperature` / `max_tokens` / `tools` 只在非 `None` 时进 payload，否则等于凭空替用户做了采样决策。
+- **别指望"改个 base_url 就完事"**。厂商兼容层各有偏差（`response_format`、thinking 字段名），真遇到时写子类覆盖 `_to_payload` / `_from_payload`。
+
+## 4. 使用的技术栈简介
+
+| 组件 | 版本/状态 | 说明 |
+|---|---|---|
+| `openai` | 3.13.0 | 覆盖所有 OpenAI 兼容厂商；**依赖 `httpx2<3,>=2.7.0`**。注意 3.x 是大版本跃迁（相对 1.x/2.x 有 breaking change），中文教程大多是旧写法，应看官方 README |
+| `httpx2` | 2.12.0 | **pydantic 团队 fork 的新 HTTP 栈**。`httpx` 0.28.1（2024-12）已停更；同环境内两栈无法共存，本项目站 `httpx2` 这一边（官方 SDK 已迁移，这是生态实际方向） |
+| `httpx2.MockTransport` | — | 日常单测的唯一 mock 手段：无文件、最精确，直接断言 payload |
+| `anyio` | `>=4.14,!=4.15.0,<5` | 打样脚本用 `anyio.run(...)`；`openai` 自身也依赖 `anyio<5` |
+
+**本任务直接受 §0「HTTP 栈已分叉」影响**：`respx` 0.23.1 仍只支持 `httpx>=0.25.0`，`litellm` 1.100.1 仍钉 `httpx<1.0` + `openai<3`，二者都**用不了**。约束必须固化——用 ruff 的 `banned-api` 禁止 `import httpx`，否则半年内一定有人在某个模块误用旧栈，造成类型错误：
+
+```toml
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"httpx".msg = "Use httpx2. Mixing httpx and httpx2 breaks the OpenAI SDK."
+```
+
+## 5. 工程化思想
+
+**"录制原始响应，而不是归一化结果"，是跨厂商无损回放的唯一办法。** 归一化是一次**有损压缩**，而压缩的取舍是当下的认知。只要未来还需要一个今天没想到的字段，归一化后的产物就永远补不回来——除非你同时留下了原文。这条原则可以迁移到任何"格式转换 + 长期留存"的场景（协议网关、日志管道、ETL）：**转换后的产物用于消费，转换前的原文用于追溯，两者都必须留。**
+
+**"唯一的注入口"比"方便的注入口"更值钱。** `http_client=` 之所以关键，不是因为它是参数，而是因为它是**唯一**的参数。当测试需要 mock 的缝只有一条时，"测试是否真的隔离了外部世界"变成可以一眼确认的事实；当缝有多条时，你永远不确定漏了哪一条。设计类时优先减少注入点，而不是增加灵活性。
+
+**归一化方向的选择标准是"可预测"，不是"信息多"。** 富→简可预测（每一处丢弃都能预先列出），简→富不可预测（要发明结构）。选错方向，纯函数就退化成启发式，也就失去了"对着固定 JSON 快照单测"的能力。**判断一个转换函数能不能测，看的是它是否可预测，而不是它复杂不复杂。**
+
+**把"模型输出的畸形"当作数据，而不是异常。** 坏 JSON、缺 `usage`、缺 `id`，都是真实世界里会发生、且**值得被评测**的现象。在数据入口处降级（`{}` / 0 / `call_0`），让运行继续、让事件落盘，失败模式才能在轨迹里被看见。

@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.pyright/
+.ruff_cache/
+runs/
+workdir/
+report*.html
+dist/
+build/
+*.egg-info/
+.env
+
+# Claude Code：本机专属权限配置不入库（共享的是 .claude/settings.json）
+.claude/settings.local.json
