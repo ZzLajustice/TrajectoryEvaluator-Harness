@@ -21,3 +21,10 @@
 
 # 轨迹快照与 cassette 是逐字节对拍用的，禁止任何转换
 *.jsonl text eol=lf
+
+# vendored 的第三方 bundle：标记为**非文本**，git 不做任何换行转换。
+#
+# 理由不是"它是二进制"（它其实是文本），而是「它的字节必须原样保留」：
+# src/harness/static/README.md 里记了 SHA-256，一旦归一化改了字节，
+# 换台机器检出来哈希就对不上 —— 而那种偏差极难定位。
+src/harness/static/*.min.js -text

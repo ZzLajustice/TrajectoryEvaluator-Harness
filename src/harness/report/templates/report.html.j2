@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>harness report — {{ suite_name }}</title>
+{#
+  完全自包含：样式内联、脚本内联、ECharts 内联。
+  这张页面打开时不该产生任何网络请求 —— 它要能当 CI artifact 或邮件附件。
+  （注意：内联的 ECharts 源码里有 http://www.w3.org/2000/svg 这类
+   XML 命名空间标识符，它们不是资源引用，不会被请求。）
+#}
+<style>
+  :root {
+    --fg: #1f2933; --dim: #6b7280; --line: #e4e7eb; --bg: #ffffff;
+    --ok: #15803d; --warn: #b45309; --bad: #b91c1c; --flaky: #a16207;
+    --card: #f8fafc;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 28px 32px 60px; background: var(--bg); color: var(--fg);
+         font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 32px 0 12px; padding-bottom: 6px;
+       border-bottom: 1px solid var(--line); }
+  .meta { color: var(--dim); font-size: 12px; margin-bottom: 20px; }
+  .cards { display: flex; flex-wrap: wrap; gap: 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+          padding: 14px 18px; min-width: 150px; }
+  .card .label { color: var(--dim); font-size: 12px; letter-spacing: .02em; }
+  .card .value { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .card .note { color: var(--dim); font-size: 11px; margin-top: 2px; }
+  .card.outcome .value { color: var(--ok); }
+  .card.process .value { color: #4f46e5; }
+  .flaky { border: 1px solid #f0c36d; background: #fffbeb; border-radius: 8px;
+           padding: 14px 18px; margin-top: 18px; }
+  .flaky h3 { margin: 0 0 8px; font-size: 14px; color: var(--flaky); }
+  .flaky ul { margin: 0; padding-left: 20px; }
+  .flaky .why { color: var(--dim); font-size: 12px; margin-top: 8px; }
+  .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+            gap: 16px; }
+  .chart { border: 1px solid var(--line); border-radius: 8px; height: 300px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--dim); font-weight: 500; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; }
+  .tag.ok { background: #dcfce7; color: var(--ok); }
+  .tag.fail { background: #fee2e2; color: var(--bad); }
+  .tag.flaky { background: #fef3c7; color: var(--flaky); }
+  footer { margin-top: 40px; padding-top: 14px; border-top: 1px solid var(--line);
+           color: var(--dim); font-size: 12px; }
+  footer dt { font-weight: 600; margin-top: 6px; }
+  .empty { color: var(--dim); font-style: italic; }
+</style>
+</head>
+<body>
+
+<h1>Agent 过程级评测报告</h1>
+<div class="meta">
+  suite: <strong>{{ suite_name or "—" }}</strong> ·
+  生成于 {{ generated_at }} ·
+  {{ aggregate.get('cases') or 0 }} 个用例
+</div>
+
+{#
+  ★ 三个指标三张独立卡片，不做任何加权、不给总分。
+  合并成一个数字能让所有指标都好看，代价是过程评测的意义被 outcome 淹没。
+#}
+<div class="cards">
+  <div class="card outcome">
+    <div class="label">pass_rate</div>
+    <div class="value">{{ "%.1f%%"|format((aggregate.get("pass_rate") or 0) * 100) }}</div>
+    <div class="note">所有 repeat 都通过</div>
+  </div>
+  <div class="card outcome">
+    <div class="label">pass@k</div>
+    <div class="value">{{ "%.1f%%"|format((aggregate.get("pass@k") or 0) * 100) }}</div>
+    <div class="note">至少一次通过</div>
+  </div>
+  <div class="card outcome">
+    <div class="label">flaky_rate</div>
+    <div class="value">{{ "%.1f%%"|format((aggregate.get("flaky_rate") or 0) * 100) }}</div>
+    <div class="note">时好时坏</div>
+  </div>
+  <div class="card process">
+    <div class="label">golden_score</div>
+    {# 不适用时显示 n/a —— 0.00 会被读成"过程分是零" #}
+    <div class="value">
+      {%- if aggregate.get('golden_score_mean') is not none -%}
+        {{ "%.2f"|format(aggregate.get("golden_score_mean")) }}
+      {%- else -%}n/a{%- endif -%}
+    </div>
+    <div class="note">轨迹匹配分（过程分，与 outcome 分列）</div>
+  </div>
+  <div class="card">
+    <div class="label">cost_usd</div>
+    <div class="value">{{ "%.4f"|format(aggregate.get("total_cost_usd") or 0) }}</div>
+    <div class="note">{{ aggregate.get('total_turns') or 0 }} turns · {{ aggregate.get('total_tool_calls') or 0 }} tool calls</div>
+  </div>
+</div>
+
+{# ★ flaky 单独一节，且放在图表之前 —— 位置就是它的重要性 #}
+{% if flaky %}
+<div class="flaky">
+  <h3>flaky cases（{{ flaky|length }}）</h3>
+  <ul>
+    {% for case_id in flaky %}<li><code>{{ case_id }}</code></li>{% endfor %}
+  </ul>
+  <p class="why">时好时坏 —— 单次通过说明不了任何事。这些用例的失败率接近抛硬币，
+    修好之前它们给出的任何"通过"都不可信。</p>
+</div>
+{% else %}
+<p class="empty">没有 flaky 用例。</p>
+{% endif %}
+
+<h2>图表</h2>
+<div class="charts">
+  <div id="chart-failure-modes" class="chart"></div>
+  <div id="chart-cost-quality" class="chart"></div>
+  <div id="chart-judge" class="chart"></div>
+</div>
+{#
+  注：计划里的"模型 × 任务热力图"需要**跨模型**的对比数据，
+  而一次 suite 运行只有一个模型，做出来是一列退化的格子。
+  等多模型对比（baseline diff 的扩展）有了真数据再加，不先摆一个空图。
+#}
+
+<h2>用例明细</h2>
+{% if cases %}
+<table>
+  <thead>
+    <tr><th>case</th><th>tier</th><th>状态</th><th class="num">通过率</th>
+        <th class="num">repeat</th><th class="num">过程分</th><th class="num">成本</th></tr>
+  </thead>
+  <tbody>
+  {% for c in cases %}
+    <tr>
+      <td><code>{{ c.case_id }}</code></td>
+      <td>{{ c.tier }}</td>
+      <td><span class="tag {{ c.status }}">{{ c.status }}</span></td>
+      <td class="num">{{ "%.0f%%"|format((c.pass_rate or 0) * 100) }}</td>
+      <td class="num">{{ c.repeats }}</td>
+      <td class="num">
+        {%- if c.golden_score is not none -%}{{ "%.2f"|format(c.golden_score) }}
+        {%- else -%}n/a{%- endif -%}
+      </td>
+      <td class="num">{{ "%.4f"|format(c.cost_usd or 0) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">没有用例数据。</p>
+{% endif %}
+
+<h2>分布</h2>
+{% if aggregate.get('status_distribution') %}
+<table>
+  <thead><tr><th>run 终态</th><th class="num">条数</th></tr></thead>
+  <tbody>
+  {% for name, count in aggregate.get('status_distribution')|dictsort %}
+    <tr><td>{{ name }}</td><td class="num">{{ count }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">没有 run 终态数据。</p>
+{% endif %}
+
+{% if failure_modes %}
+<h2>失败模式分布</h2>
+<table>
+  <thead><tr><th>模式</th><th class="num">命中次数</th></tr></thead>
+  <tbody>
+  {% for name, count in failure_modes|dictsort(by="value", reverse=true) %}
+    <tr><td><code>{{ name }}</code></td><td class="num">{{ count }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if judge %}
+<h2>judge 可靠性</h2>
+<table>
+  <thead><tr><th>指标</th><th class="num">值</th></tr></thead>
+  <tbody>
+  {% for name, value in judge|dictsort %}
+    <tr><td>{{ name }}</td><td class="num">{{ value }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<footer>
+  <strong>指标口径</strong>
+  <dl>
+  {% for name, definition in metric_definitions|dictsort %}
+    <dt>{{ name }}</dt><dd>{{ definition }}</dd>
+  {% endfor %}
+  </dl>
+</footer>
+
+<script>{{ echarts_source | safe }}</script>
+<script>
+const DATA = {{ chart_data | safe }};
+const AXIS = { color: '#6b7280' };
+const BASE = {
+  grid: { left: 56, right: 24, top: 40, bottom: 44 },
+  textStyle: { fontFamily: 'inherit' },
+  tooltip: {}
+};
+
+function init(id, option) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  echarts.init(el).setOption(option);
+}
+
+// ---- 失败模式分布 ----
+(function () {
+  const entries = Object.entries(DATA.failure_modes || {})
+    .sort((a, b) => b[1] - a[1]);
+  init('chart-failure-modes', Object.assign({}, BASE, {
+    title: { text: '失败模式分布', left: 'center', textStyle: { fontSize: 13 } },
+    xAxis: { type: 'category', data: entries.map(e => e[0]),
+             axisLabel: Object.assign({ rotate: 30 }, AXIS) },
+    yAxis: { type: 'value', minInterval: 1, axisLabel: AXIS },
+    series: [{ type: 'bar', data: entries.map(e => e[1]), itemStyle: { color: '#b45309' } }]
+  }));
+})();
+
+// ---- 成本 × 通过率 ----
+(function () {
+  const pts = (DATA.cost_quality || []).map(r => [r.cost, r.pass_rate, r.case_id]);
+  init('chart-cost-quality', Object.assign({}, BASE, {
+    title: { text: '成本 × 通过率', left: 'center', textStyle: { fontSize: 13 } },
+    tooltip: { formatter: p => `${p.value[2]}<br>cost $${p.value[0]}<br>pass ${p.value[1]}` },
+    xAxis: { type: 'value', name: 'cost_usd', axisLabel: AXIS },
+    yAxis: { type: 'value', min: 0, max: 1, name: 'pass_rate', axisLabel: AXIS },
+    series: [{ type: 'scatter', symbolSize: 12, data: pts, itemStyle: { color: '#4f46e5' } }]
+  }));
+})();
+
+// ---- judge 可靠性雷达 ----
+(function () {
+  const j = DATA.judge;
+  if (!j) return;
+  const names = Object.keys(j);
+  init('chart-judge', Object.assign({}, BASE, {
+    title: { text: 'judge 可靠性', left: 'center', textStyle: { fontSize: 13 } },
+    radar: {
+      indicator: names.map(n => ({ name: n, max: 1 })),
+      radius: '62%'
+    },
+    series: [{ type: 'radar', data: [{ value: names.map(n => j[n]), name: 'judge' }],
+               areaStyle: { opacity: 0.25 }, itemStyle: { color: '#15803d' } }]
+  }));
+})();
+</script>
+</body>
+</html>
