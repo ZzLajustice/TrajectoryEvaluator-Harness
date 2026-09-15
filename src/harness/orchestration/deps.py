@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from harness.contracts.protocols import LLMResponse
+from harness.contracts.protocols import EvalContext, LLMResponse
+from harness.contracts.results import EvalResult
 from harness.contracts.spec import (
     Budget,
     MiddlewareSpec,
@@ -42,6 +44,8 @@ from harness.core.tools.finish import FinishTool
 from harness.core.tools.fs import ListDirTool, ReadFileTool, WriteFileTool
 from harness.core.tools.search import SearchTool
 from harness.core.tools.shell import RunCommandTool
+from harness.evaluators.base import run_evaluators
+from harness.orchestration.evalrunner import build_evaluators
 from harness.providers.fake import FakeProvider, text_response, tool_call_response
 from harness.providers.recording import RecordingProvider, ReplayProvider
 from harness.providers.response_pool import ResponsePool
@@ -126,6 +130,18 @@ def load_suite_config(suite_path: Path | str) -> dict[str, Any]:
     return raw
 
 
+@dataclass(slots=True)
+class RunOutcome:
+    """一次 run 及其评测结果。
+
+    合并成一个对象返回，而不是让调用方自己配对 —— 配对错了（比如结果错位）
+    会让报告张冠李戴，且不会有任何报错。
+    """
+
+    result: RunResult
+    evals: list[EvalResult] = field(default_factory=list)
+
+
 class RunBuilder:
     """装配层。任务 27 会扩展为支持并发 suite 与评测调度。"""
 
@@ -159,10 +175,14 @@ class RunBuilder:
             return RecordingProvider(base, ResponsePool(self.record))
         return base
 
-    def run_suite_sync(self, suite_path: Path | str) -> list[RunResult]:
-        return asyncio.run(self.run_suite(suite_path))
+    def run_suite_sync(
+        self, suite_path: Path | str, *, evaluate: bool = False
+    ) -> list[RunOutcome]:
+        return asyncio.run(self.run_suite(suite_path, evaluate=evaluate))
 
-    async def run_suite(self, suite_path: Path | str) -> list[RunResult]:
+    async def run_suite(
+        self, suite_path: Path | str, *, evaluate: bool = False
+    ) -> list[RunOutcome]:
         cfg = load_suite_config(suite_path)
 
         tools = build_tool_registry()
@@ -194,15 +214,22 @@ class RunBuilder:
         deps = RunDeps(provider=provider, store=store, tools=tools,
                        middlewares=middlewares)
 
+        evals: list[EvalResult] = []
         try:
             result = await Run(spec, deps).execute()
+            if evaluate:
+                # 评测器在轨迹落盘之后跑 —— 它只读轨迹，与 agent 零耦合。
+                # 只读是「评测器绝不 import core」这条架构约束的运行时体现：
+                # 若哪天评测器想直接驱动 agent，这里就拿不到任何句柄。
+                graders = build_evaluators(cfg.get("graders") or [])
+                evals = await run_evaluators(graders, result.trajectory, EvalContext())
         finally:
             await store.close()
             # 录制内容必须在退出前落盘 —— 否则录了个寂寞
             if isinstance(provider, RecordingProvider):
                 provider.save()
 
-        return [result]
+        return [RunOutcome(result=result, evals=evals)]
 
 
 def dumps(obj: Any) -> str:

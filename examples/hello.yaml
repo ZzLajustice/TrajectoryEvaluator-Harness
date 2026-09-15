@@ -22,3 +22,19 @@ fake_script:
   - tool: finish
     arguments:
       summary: "hello"
+
+# 评测器：`harness run --evaluate` 时才跑。
+# 名字必须在 evalrunner.EVALUATOR_REGISTRY 白名单里 —— 拼错直接报错退出。
+graders:
+  - name: TrajectoryMatcher
+    config:
+      mode: strict
+      # 参数走 exact 匹配：expected 是 [工具名, 参数] 的列表
+      expected:
+        - [finish, {summary: "hello"}]
+      tool_args_match_mode: exact
+
+  - name: EfficiencyAnalyzer
+    config:
+      # 人工标注的合理路径长度。不声明（0）时步数比报 0.0 而非除零。
+      optimal_steps: 1

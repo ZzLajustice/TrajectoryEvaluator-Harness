@@ -23,6 +23,12 @@ from harness.orchestration.deps import RunBuilder, SuiteConfigError
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
+# CLI 里评测状态的显示符号 —— 与 EvalStatus 一一对应
+_STATUS_MARK = {
+    "pass": "PASS", "fail": "FAIL", "warn": "WARN",
+    "skipped": "SKIP", "error": "ERROR",
+}
+
 EXIT_CONFIG_ERROR = 2
 
 
@@ -39,10 +45,14 @@ def run(
         None, "--record", help="把 provider 响应录制到指定文件。"),
     replay: Path | None = typer.Option(
         None, "--replay", help="从指定文件回放 provider 响应（不发起真实调用）。"),
+    evaluate: bool = typer.Option(
+        False, "--evaluate", help="运行 suite 声明的评测器并打印结果。"),
 ) -> None:
     """运行一个 suite 并打印每条 run 的摘要。
 
     `--record` 与 `--replay` 互斥：录制要打真实模型，回放则完全离线。
+    `--evaluate` 默认关闭：跑 agent 与评 agent 是两件事，
+    后续接入 LLM judge 后评测会产生额外成本，不该在不知情时发生。
     """
     if record is not None and replay is not None:
         typer.echo("config error: --record and --replay are mutually exclusive", err=True)
@@ -50,17 +60,33 @@ def run(
 
     try:
         builder = RunBuilder(out_dir=out, record=record, replay=replay)
-        results = builder.run_suite_sync(suite)
-    except (FileNotFoundError, SuiteConfigError, KeyError) as exc:
+        outcomes = builder.run_suite_sync(suite, evaluate=evaluate)
+    except (FileNotFoundError, SuiteConfigError, KeyError, ValueError) as exc:
         typer.echo(f"config error: {exc}", err=True)
         raise typer.Exit(EXIT_CONFIG_ERROR) from exc
 
-    for r in results:
+    for outcome in outcomes:
+        r = outcome.result
         tokens = r.usage.input_tokens + r.usage.output_tokens
         typer.echo(
             f"{r.run_id}  {r.status.value:<18} "
             f"turns={r.turns:<3} calls={r.tool_calls:<3} tokens={tokens}"
         )
+        for ev in outcome.evals:
+            mark = _STATUS_MARK.get(ev.status.value, ev.status.value)
+            typer.echo(f"      {mark:<8} {ev.evaluator:<20} {ev.summary}")
+            for finding in ev.findings:
+                # code 是机器可读的稳定标识 —— 报告聚合与回归比较都靠它，
+                # 终端里也必须看得见，否则只能靠人眼看 message 找规律
+                typer.echo(
+                    f"          - [{finding.severity.value}] "
+                    f"{finding.code}: {finding.message}"
+                )
+        if any(ev.error for ev in outcome.evals):
+            # ERROR 是评测器自己坏了 —— 必须显式提示，不能混在 FAIL 里
+            for ev in outcome.evals:
+                if ev.error:
+                    typer.echo(f"      ! {ev.evaluator} crashed: {ev.error}", err=True)
 
 
 @app.command()

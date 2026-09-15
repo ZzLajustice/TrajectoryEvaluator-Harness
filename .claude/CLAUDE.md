@@ -6,9 +6,13 @@
 
 ## 当前状态（重要）
 
-**只有文档，代码尚未开始。** `src/` 还不存在。全部实现步骤是**计划**，不是已完成的代码。
+**M0–M5 已完成**（任务 1–26 / 共 36）。`src/harness/` 52 个文件 4,605 行，`tests/` 29 个测试文件 4,660 行，556 条测试全绿。
 
-下一步是执行 [Part 1 计划](docs/superpowers/plans/2026-09-14-agent-eval-harness-part1-foundation.md)（36 个任务 / 196 个 TDD 步骤中的前 15 个）。
+已完成的能力：事件模型与只读 `Trajectory`、`RunSpec`/`Run` 双 harness 骨架、6 个 SUT 工具、Windows 进程树执行器、5 个中间件（telemetry 最外层）、budget governor、真 provider + record/replay、评测器框架 + `TrajectoryBuilder` + `TrajectoryMatcher` + `EfficiencyAnalyzer`、`harness run --evaluate` 端到端可跑。
+
+**尚未实现**（后续里程碑）：suite 并发调度与 SQLite 索引（M6）、`FailureClassifier`/`GroundingChecker`（M7）、报告与 diff（M8）、judge 工具与 `JudgeClient`（M9）、`MetaEvaluator`（M10）、adapters/`ci`/用例集（M11）。`tests/test_architecture.py` 属 M11，目前**还不存在** —— 架构约束暂时只由 `uv run lint-imports` 守着。
+
+下一步是 [Part 3 计划](docs/superpowers/plans/) 的 M6（任务 27–29）。
 
 ## 文档地图
 
@@ -35,8 +39,10 @@
 
 - **所有命令走 `uv run`**，不要手动 activate。项目内 `.venv` 锁 Python 3.12（本机默认是 3.14.5，不要用）
 - **TDD 五步循环**：写失败测试 → 确认失败 → 最小实现 → 确认通过 → commit
-- **架构约束可执行**：`uv run lint-imports` + `tests/test_architecture.py`（纯 ast 断言），两者刻意冗余
+- **架构约束可执行**：`uv run lint-imports`（契约写在 `pyproject.toml`）。M11 会再加一份纯 ast 的 `tests/test_architecture.py`，两者**刻意冗余**
 - **L0 叶子层规则**：`events/` 只能 import 自己；`contracts/` 只能向下 import `events`。其他层只许向下依赖 L0
+- **评测器调度住在 `evaluators/base.py::run_evaluators`**，不在组装层。它只用到 L0 类型，第三方写评测器时 import 一个模块就同时拿到基类和调度器
+- **提交前必须四个门全绿**：`uv run pytest` / `ruff check .` / `pyright` / `lint-imports`。四条命令与 `git commit` **分开执行**，先读输出再提交（曾把 ruff 错误一起提交过）
 - **Windows 特有约束**（踩过坑，勿改）：
   - `asyncio.create_subprocess_exec` 只支持 `ProactorEventLoop`，**绝不设置 `WindowsSelectorEventLoopPolicy`**
   - `asyncio.wait_for` 超时**不杀子进程**，必须 `CREATE_NEW_PROCESS_GROUP` + `taskkill /F /T`，否则留下孤儿进程并导致 `WinError 32`
@@ -46,6 +52,7 @@
 
 - 仓库根是 `评测harness/`，首次提交只含文档
 - commit message 用简洁英文
+- 提交前先展示变更摘要
 
 <!-- superpowers-zh:begin (do not edit between these markers) -->
 # Superpowers-ZH 中文增强版
