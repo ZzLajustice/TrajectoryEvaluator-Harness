@@ -30,12 +30,20 @@ from harness.core.middleware.policy import PolicyMiddleware
 from harness.core.middleware.sandbox import SandboxMiddleware
 from harness.core.middleware.telemetry import TelemetryMiddleware
 
-# 从外到内。改动这里等于改安全语义 —— 想清楚再动。
+# 从外到内。改动这里等于改语义 —— 想清楚再动。
+#
+# **Telemetry 必须在最外层。** 它是纯观察者，不做任何决策；
+# 放在内层会导致外层中间件的拒绝**完全不被记录** ——
+# 短路之后 telemetry 根本没机会执行，轨迹里只有 TOOL_CALL 没有 TOOL_RESULT，
+# 评测器看到的是悬空配对。（这条是实测踩出来的：初版把 telemetry 排在
+# budget 之内，结果是预算拒绝在轨迹里完全隐形。）
+#
+# 原则：**观察者在最外层，决策者在内层。**
 CANONICAL_ORDER: tuple[str, ...] = (
+    "telemetry",
     "permission",
     "sandbox",
     "budget",
-    "telemetry",
     "policy",
 )
 

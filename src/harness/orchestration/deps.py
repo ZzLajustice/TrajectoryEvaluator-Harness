@@ -33,6 +33,7 @@ from harness.contracts.spec import (
     RunSpec,
     TaskSpec,
     ToolPolicy,
+    WorkspaceSpec,
 )
 from harness.core.middleware.factory import build_middlewares
 from harness.core.registry import ToolRegistry
@@ -63,6 +64,25 @@ def build_tool_registry() -> ToolRegistry:
 
 class SuiteConfigError(ValueError):
     """suite 文件格式错误 —— 映射到 CLI 退出码 2。"""
+
+
+_WORKSPACE_KINDS = ("copy", "git_worktree", "tempdir")
+
+
+def _workspace_kind(raw: Any) -> Any:
+    """校验并收窄 workspace kind。
+
+    拼错的值必须报错 —— 静默回退到默认会让"我明明配了 copy"变成
+    "为什么工作目录是空的"这类难查的问题。
+    """
+    if raw is None:
+        return "tempdir"
+    kind = str(raw)
+    if kind not in _WORKSPACE_KINDS:
+        raise SuiteConfigError(
+            f"unknown workspace kind {kind!r}; known: {list(_WORKSPACE_KINDS)}"
+        )
+    return kind
 
 
 def build_fake_script(raw: Any) -> list[LLMResponse]:
@@ -155,6 +175,13 @@ class RunBuilder:
                           prompt=str(cfg.get("task") or "Say hello and finish.")),
             tools=ToolPolicy(),
             budget=Budget(max_turns=int(cfg.get("max_turns") or 5)),
+            # 默认给一个临时工作目录 —— SUT 是代码修复类 agent，
+            # 没有工作目录时文件工具全部失败（实测踩过：ctx.ws 为 None，
+            # 工具报 AttributeError，沙箱中间件也因拿不到 root 而静默放行越狱）
+            workspace=WorkspaceSpec(
+                kind=_workspace_kind(cfg.get("workspace")),
+                source=cfg.get("workspace_source"),
+            ),
         )
 
         store = JsonlStore(self.out_dir)

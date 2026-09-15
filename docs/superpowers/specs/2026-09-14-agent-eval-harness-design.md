@@ -197,7 +197,7 @@ class Run:
 ```python
 def build_pipeline(middlewares, terminal) -> Handler:
     """middlewares[0] 是最外层。顺序:
-       TOOL_CALL → Permission → Sandbox → Budget → Telemetry → Policy → Executor → TOOL_RESULT"""
+       TOOL_CALL → Telemetry → Permission → Sandbox → Budget → Policy → Executor → TOOL_RESULT"""
     def wrap(nxt, mw):
         async def handler(ctx): return await mw.handle(ctx, nxt)
         return handler
@@ -205,6 +205,21 @@ def build_pipeline(middlewares, terminal) -> Handler:
 ```
 
 管道在 `Run.__init__` **只构建一次**，复用整个 run。
+
+> **⚠️ Telemetry 必须在最外层（实现时修正的初版错误）。**
+>
+> 初版顺序是 `Permission → Sandbox → Budget → Telemetry → Policy`，
+> 把观察者排在了决策者之内。后果：**Permission / Sandbox / Budget 的拒绝
+> 完全不会被记录** —— 短路之后 telemetry 没机会执行，
+> 轨迹里只剩 `TOOL_CALL` 没有 `TOOL_RESULT`，评测器看到的是悬空配对。
+>
+> 这个 bug 单测看不出来（每个中间件单独测都是对的），
+> 只有跑真实 CLI 看 trace 才暴露。
+>
+> **原则：观察者在最外层，决策者在内层。**
+> `Telemetry` 不做任何决策，放最外层不削弱安全性，却能记录每一次拒绝。
+> `Permission` 紧随其后（被禁的工具不该先过沙箱），
+> `Policy` 在最内层（自定义规则最后生效）。
 
 **状态作用域规则**：`ToolCallContext` 每次调用新建，故并发安全；`Middleware` 实例在 run 内共享，**只能持有 run 级状态**（如 `BudgetMW` 计数器），**调用级状态一律放 `ctx.scratch`**。
 

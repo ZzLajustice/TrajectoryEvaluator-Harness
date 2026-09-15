@@ -27,6 +27,7 @@ import asyncio
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from harness.contracts.protocols import (
@@ -36,12 +37,15 @@ from harness.contracts.protocols import (
     TrajectoryStore,
 )
 from harness.contracts.results import Usage
-from harness.contracts.spec import RunSpec, RunStatus
+from harness.contracts.spec import MiddlewareSpec, RunSpec, RunStatus
 from harness.core.budget import BudgetGovernor
 from harness.core.context import ContextManager
+from harness.core.executors.local import LocalExecutor
 from harness.core.middleware.context import ToolCallContext
+from harness.core.middleware.telemetry import TelemetryMiddleware
 from harness.core.pipeline import build_pipeline
 from harness.core.registry import ToolRegistry
+from harness.core.workspace import Workspace
 from harness.events.trajectory import Trajectory
 from harness.events.types import EventType, RunEndEvent, RunStartEvent
 
@@ -89,6 +93,11 @@ class RunDeps:
     store: TrajectoryStore
     tools: ToolRegistry
     middlewares: Sequence[Any] = ()
+    # 工作目录与执行器。为 None 时不建工作目录 —— 但**文件类工具会因此失败**，
+    # 实测踩过：工具拿到 `ctx.ws = None` 后全部报 AttributeError，
+    # 而沙箱中间件会因拿不到 root 而静默放行路径越狱。
+    executor: Any = None
+    workdir: Path | str = "workdir"
     id_gen: Callable[[], str] = field(
         default_factory=lambda: lambda: f"run_{int(time.time() * 1000) % 10_000_000}"
     )
@@ -135,8 +144,26 @@ class RunContext:
             token_budget=spec.budget.max_input_tokens,
             task=spec.task.prompt if spec.task else None,
         )
-        # 管道只构建一次，复用整个 run
-        self.tool_chain = build_pipeline(list(deps.middlewares), self._execute_tool)
+        # 工作目录由 Run.execute 在 setup 之后填入；工具与沙箱中间件都靠它
+        self.ws: Any = None
+
+        # 管道只构建一次，复用整个 run。
+        # **自动补上 telemetry**：没有它就没有 TOOL_RESULT 事件，
+        # 评测器会看到「有 TOOL_CALL 无 TOOL_RESULT」的悬空配对。
+        # 「轨迹必须完整」是 Run 的不变量，不该由调用方记得配置。
+        self.tool_chain = build_pipeline(self._ensure_telemetry(deps.middlewares),
+                                         self._execute_tool)
+
+    @staticmethod
+    def _ensure_telemetry(middlewares: Sequence[Any]) -> list[Any]:
+        """保证 telemetry 存在，且**在最外层**。
+
+        它在最外层才能记录到所有中间件的拒绝 —— 在内层时，
+        外层短路后它根本没机会执行，轨迹只剩悬空配对。
+        """
+        chain = [m for m in middlewares if getattr(m, "name", "") != "telemetry"]
+        chain.insert(0, TelemetryMiddleware(MiddlewareSpec(name="telemetry")))
+        return chain
 
     # ---- 事件 ----
     def next_seq(self) -> int:
@@ -157,6 +184,7 @@ class RunContext:
         """
         ctx = ToolCallContext(
             run_id=self.run_id, turn=turn, call=call, spec=self.spec,
+            ws=self.ws, executor=self.deps.executor,
             budget=self.governor,
             emit=self.emit, next_seq=self.next_seq,
         )
@@ -171,6 +199,13 @@ class RunContext:
             )
 
     async def _execute_tool(self, ctx: ToolCallContext) -> ToolResult:
+        """管道最内层：真正调用工具。
+
+        **工具异常在这里就被转成 ToolResult**，不让它逃逸到中间件层。
+        否则同一次失败会有两个名字：TelemetryMW 记成 `middleware_error`
+        （它无法知道异常来自哪一层），而这里返回 `sandbox_error` ——
+        事件流与返回值说法不一致，下游分析会分裂。
+        """
         call = ctx.call
         if call.name not in self.tool_names:
             return ToolResult(
@@ -178,7 +213,14 @@ class RunContext:
                 error=f"unknown tool: {call.name}", error_type="unknown_tool",
             )
         started = time.monotonic()
-        result = await self.deps.tools.get(call.name).invoke(call, ctx.ws)
+        try:
+            result = await self.deps.tools.get(call.name).invoke(call, ctx.ws)
+        except Exception as exc:  # noqa: BLE001
+            return ToolResult(
+                call_id=call.call_id, name=call.name, ok=False,
+                error=f"{type(exc).__name__}: {exc}", error_type="sandbox_error",
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
         result.duration_ms = int((time.monotonic() - started) * 1000)
         return result
 
@@ -191,11 +233,34 @@ class Run:
         self.deps = deps
         self.run_id = deps.id_gen()
 
+    async def _open_workspace(self, ctx: RunContext) -> Any:
+        """按 RunSpec 建工作目录。
+
+        没有 workspace 配置时不建 —— 但那时文件类工具会失败，
+        这是配置问题而非实现问题。
+        """
+        if self.spec.workspace is None:
+            return None
+        executor = self.deps.executor or LocalExecutor()
+        ws = Workspace(
+            self.spec.workspace,
+            workdir=self.deps.workdir,
+            run_id=self.run_id,
+            executor=executor,
+            case_id=self.spec.task.case_id if self.spec.task else "case",
+        )
+        await ws.setup()
+        ctx.ws = ws
+        return ws
+
     async def execute(self) -> RunResult:
         from harness.core.loop import agent_loop
 
         started = self.deps.clock()
         ctx = RunContext(self.run_id, self.spec, self.deps)
+
+        # 工作目录：没有它，文件工具全部失败、沙箱检查静默放行
+        workspace = await self._open_workspace(ctx)
 
         ctx.emit(RunStartEvent(
             run_id=self.run_id, seq=ctx.next_seq(), type=EventType.RUN_START,
@@ -207,11 +272,18 @@ class Run:
             spec_json=self.spec.model_dump_json(),
         ))
 
+        # 先给 status 一个默认值：`CancelledError` 是 BaseException，
+        # 不会被下面的 `except Exception` 捕获，此时 finally 里的引用会 NameError。
+        status: RunStatus = RunStatus.CANCELLED
         error: str | None = None
         try:
             status = await agent_loop(ctx)
         except Exception as exc:  # noqa: BLE001
             status, error = RunStatus.SANDBOX_ERROR, f"{type(exc).__name__}: {exc}"
+        finally:
+            if workspace is not None:
+                # 失败时保留现场供调试（keep_on_failure）
+                await workspace.teardown(failed=(status is not RunStatus.OK))
 
         duration = self.deps.clock() - started
         ctx.emit(RunEndEvent(

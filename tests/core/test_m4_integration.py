@@ -21,6 +21,7 @@ from harness.contracts.spec import (
     RunStatus,
     TaskSpec,
     ToolPolicy,
+    WorkspaceSpec,
 )
 from harness.core.middleware.factory import CANONICAL_ORDER, build_middlewares
 from harness.core.registry import ToolRegistry
@@ -203,3 +204,127 @@ async def test_full_middleware_stack_does_not_break_a_normal_run(tmp_path):
     p = FakeProvider([tool_call_response("finish", {"summary": "done"})])
     result = await Run(_spec(allow=None), _deps(p, tmp_path, mw)).execute()
     assert result.status is RunStatus.OK
+
+
+# --------------------------------------------------------------------------
+# 回归测试：M4 手工验收时抓到的三个真实 bug
+#
+# 这些 bug 单测全部通过、集成测试也通过，只有跑真实 CLI 才暴露 ——
+# 教训是「类通过测试 ≠ 功能可用」，端到端走一遍不可省。
+# --------------------------------------------------------------------------
+class _BoomTool:
+    name = "boom"
+
+    @property
+    def description(self) -> str:
+        return "always fails"
+
+    def schema(self) -> dict[str, Any]:
+        return {"name": self.name, "description": self.description,
+                "parameters": {"type": "object", "properties": {}}}
+
+    async def invoke(self, call: ToolCall, ws: Any) -> ToolResult:
+        raise RuntimeError("tool exploded")
+
+
+def _deps_with_ws(provider: Any, tmp_path: Any, middlewares: Any = ()) -> RunDeps:
+    reg = ToolRegistry()
+    reg.register(FinishTool())
+    return RunDeps(provider=provider, store=JsonlStore(tmp_path), tools=reg,
+                   middlewares=middlewares, workdir=tmp_path / "workdir")
+
+
+async def test_bug_no_duplicate_tool_result_events(tmp_path):
+    """★ 回归：loop 与 TelemetryMW 各发一次，产生重复的 tool.result。
+
+    重复会让 GroundingChecker / EfficiencyAnalyzer 重复计数 ——
+    指标悄悄翻倍，且没有任何报错。
+    """
+    p = FakeProvider([tool_call_response("finish", {"summary": "d"}, call_id="c1")])
+    result = await Run(_spec(), _deps(p, tmp_path)).execute()
+
+    calls = result.trajectory.tool_calls()
+    results = result.trajectory.tool_results()
+    assert len(calls) == len(results) == 1
+
+
+async def test_bug_denials_are_recorded_regardless_of_which_middleware_denied(tmp_path):
+    """★ 回归：Telemetry 排在决策中间件之内时，那些拒绝不会被记录。
+
+    短路后 telemetry 没机会执行。
+
+    轨迹里只剩 TOOL_CALL 没有 TOOL_RESULT，评测器看到悬空配对。
+    """
+    mw = build_middlewares([MiddlewareSpec(name=n)
+                            for n in ("permission", "sandbox", "budget", "telemetry")])
+    p = FakeProvider([
+        tool_call_response("echo", {}, call_id="c1"),      # 会被 permission 拒（allow=[]）
+        tool_call_response("finish", {"summary": "d"}, call_id="c2"),
+    ])
+    result = await Run(_spec(allow=[]), _deps(p, tmp_path, mw)).execute()
+
+    calls = result.trajectory.tool_calls()
+    results = result.trajectory.tool_results()
+    assert len(calls) == len(results), (
+        "每个 TOOL_CALL 都必须有对应的 TOOL_RESULT —— "
+        "否则中间件的拒绝在轨迹里是隐形的")
+    assert any(r.denied_by == "permission" for r in results)
+
+
+async def test_bug_tool_exception_has_one_consistent_name(tmp_path):
+    """★ 回归：工具异常曾被记成两个不同的 error_type。
+
+    TelemetryMW 记 middleware_error，invoke_tool 返回 sandbox_error ——
+    同一次失败两个名字，下游分析会分裂。
+    """
+    reg = ToolRegistry()
+    reg.register(FinishTool())
+    reg.register(_BoomTool())
+    deps = RunDeps(provider=FakeProvider([
+        tool_call_response("boom", {}, call_id="c1"),
+        tool_call_response("finish", {"summary": "d"}, call_id="c2"),
+    ]), store=JsonlStore(tmp_path), tools=reg)
+
+    result = await Run(_spec(), deps).execute()
+    failed = [r for r in result.trajectory.tool_results() if not r.ok]
+    assert len(failed) == 1
+    assert failed[0].error_type == "sandbox_error"
+
+
+async def test_bug_workspace_is_wired_so_file_tools_work(tmp_path):
+    """★ 回归：ctx.ws 曾被留空，文件工具全部报 AttributeError。
+
+    沙箱中间件也会因拿不到 root 而静默放行路径越狱 ——
+    一个空值同时废掉工具与安全防线。
+    """
+    from harness.core.tools.fs import WriteFileTool
+
+    reg = ToolRegistry()
+    reg.register(FinishTool())
+    reg.register(WriteFileTool())
+    deps = RunDeps(provider=FakeProvider([
+        tool_call_response("write_file", {"path": "a.txt", "content": "hi"}, call_id="c1"),
+        tool_call_response("finish", {"summary": "d"}, call_id="c2"),
+    ]), store=JsonlStore(tmp_path), tools=reg, workdir=tmp_path / "workdir")
+
+    spec = _spec()
+    spec.workspace = WorkspaceSpec(kind="tempdir", keep_on_failure=True)  # type: ignore[assignment]
+    result = await Run(spec, deps).execute()
+
+    wrote = [r for r in result.trajectory.tool_results() if r.name == "write_file"]
+    assert wrote and wrote[0].ok, f"write_file failed: {wrote}"
+
+
+async def test_telemetry_is_outermost_so_it_sees_everything(tmp_path):
+    """观察者必须在最外层 —— 这是顺序语义的核心，值得单独钉住。"""
+    from harness.core.middleware.factory import CANONICAL_ORDER
+
+    assert CANONICAL_ORDER[0] == "telemetry", (
+        "Telemetry 必须在最外层；排在内层会让外层中间件的拒绝不被记录")
+
+
+async def test_telemetry_is_auto_injected_when_caller_forgets(tmp_path):
+    """轨迹完整性是 Run 的不变量，不该由调用方记得配置。"""
+    p = FakeProvider([tool_call_response("finish", {"summary": "d"}, call_id="c1")])
+    result = await Run(_spec(), _deps(p, tmp_path, middlewares=())).execute()
+    assert len(result.trajectory.tool_results()) == 1

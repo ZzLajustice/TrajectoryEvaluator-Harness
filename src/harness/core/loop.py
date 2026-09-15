@@ -26,12 +26,10 @@ from harness.events.types import (
     LLMRequestEvent,
     LLMResponseEvent,
     ToolCallEvent,
-    ToolResultEvent,
     TurnStartEvent,
 )
 
 if TYPE_CHECKING:
-    from harness.contracts.protocols import ToolResult
     from harness.core.run import RunContext
 
 
@@ -111,8 +109,10 @@ async def agent_loop(ctx: RunContext) -> RunStatus:
                 turn=turn, call_id=call.call_id, name=call.name,
                 arguments=call.arguments,
             ))
+            # **不在这里发 TOOL_RESULT** —— 那是 TelemetryMW 的职责。
+            # 两处都发会产生重复事件（实测踩过），而重复的 tool.result
+            # 会让 GroundingChecker / EfficiencyAnalyzer 重复计数。
             result = await ctx.invoke_tool(call, turn)
-            ctx.emit(_result_event(ctx, turn, result))
             ctx.context.append_tool_result(result)
 
             if call.name == "finish" and result.ok:
@@ -138,13 +138,4 @@ def _to_provider_request(ctx: RunContext, messages: list[Message]) -> LLMRequest
         tools=ctx.deps.tools.schemas(ctx.spec.tools) or None,
         temperature=ctx.spec.model.temperature,
         max_output_tokens=ctx.spec.model.max_output_tokens,
-    )
-
-
-def _result_event(ctx: RunContext, turn: int, r: ToolResult) -> ToolResultEvent:
-    return ToolResultEvent(
-        run_id=ctx.run_id, seq=ctx.next_seq(), type=EventType.TOOL_RESULT,
-        turn=turn, call_id=r.call_id, name=r.name, ok=r.ok, content=r.content,
-        error=r.error, error_type=r.error_type, duration_ms=r.duration_ms,
-        truncated=r.truncated, denied_by=r.denied_by,
     )
