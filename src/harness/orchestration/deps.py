@@ -23,8 +23,25 @@ from harness.contracts.spec import Budget, ModelRef, RunRole, RunSpec, ToolPolic
 from harness.core.registry import ToolRegistry
 from harness.core.run import Run, RunDeps, RunResult
 from harness.core.tools.finish import FinishTool
+from harness.core.tools.fs import ListDirTool, ReadFileTool, WriteFileTool
+from harness.core.tools.search import SearchTool
+from harness.core.tools.shell import RunCommandTool
 from harness.providers.fake import FakeProvider, text_response, tool_call_response
 from harness.store.jsonl import JsonlStore
+
+
+def build_tool_registry() -> ToolRegistry:
+    """SUT 的完整工具集（设计文档 §3.3）。
+
+    六个工具缺一不可：少了 `search`，agent 只能靠 `list_dir` 逐个目录翻；
+    少了 `run_command`，它无法验证自己的修改。
+    工具集的完整性直接决定**在测的是模型能力还是环境限制**。
+    """
+    reg = ToolRegistry()
+    for tool in (ReadFileTool(), WriteFileTool(), ListDirTool(),
+                 SearchTool(), RunCommandTool(), FinishTool()):
+        reg.register(tool)
+    return reg
 
 
 class SuiteConfigError(ValueError):
@@ -84,8 +101,7 @@ class RunBuilder:
     async def run_suite(self, suite_path: Path | str) -> list[RunResult]:
         cfg = load_suite_config(suite_path)
 
-        tools = ToolRegistry()
-        tools.register(FinishTool())
+        tools = build_tool_registry()
 
         spec = RunSpec(
             role=RunRole.SUT,

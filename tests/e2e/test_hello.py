@@ -104,3 +104,27 @@ def test_deps_module_is_importable_as_the_assembly_point():
     from harness.orchestration.deps import RunBuilder
 
     assert RunBuilder(out_dir=Path("runs")) is not None
+
+
+def test_sut_gets_the_full_documented_tool_set():
+    """设计文档 §3.3 规定了 6 个 SUT 工具。
+
+    工具集不完整时，测出来的不是模型能力而是**环境限制** ——
+    少一个 `search`，agent 就只能靠 list_dir 逐个目录翻。
+    """
+    from harness.orchestration.deps import build_tool_registry
+
+    assert build_tool_registry().names() == [
+        "finish", "list_dir", "read_file", "run_command", "search", "write_file",
+    ]
+
+
+def test_hello_run_records_the_tools_it_offered(tmp_path):
+    """轨迹必须记下当次暴露了哪些工具 —— 否则结果不可解释。"""
+    _run_hello(tmp_path)
+    first = json.loads(
+        next(tmp_path.glob("*.jsonl")).read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert set(first["tools"]) == {
+        "finish", "list_dir", "read_file", "run_command", "search", "write_file",
+    }

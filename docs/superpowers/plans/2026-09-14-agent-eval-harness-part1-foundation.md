@@ -2159,6 +2159,18 @@ git commit -m "feat(cli): run and trace commands with offline end-to-end hello s
 
 ## M2：执行隔离与工具集
 
+> **落地时补齐的一处计划缺口**：设计文档 §3.3 规定 SUT 有 **6 个**工具
+> （`read_file` / `write_file` / `list_dir` / **`search`** / `run_command` / `finish`），
+> 但任务 13/14 只覆盖了其中 5 个 —— **`search` 从未被分配到任何任务**，
+> 而 M2 的验收标准却写着「6 个工具全部可用」。
+>
+> 实现时补上了 `core/tools/search.py`（12 条测试）。为什么要它：没有 `search`，
+> agent 只能靠 `list_dir` 逐个目录翻，或用 `run_command` 调 grep ——
+> 后者在 Windows 上没有 `grep` 可执行文件，会把**环境限制**混进**模型能力**的测量里。
+>
+> 教训：**验收标准里的数字要和任务清单对得上**。写「6 个工具」时没人去数任务里
+> 实际定义了几个，是这类缺口能溜过去的原因。
+
 ### 任务 12：`LocalExecutor`（Windows 进程树处理）⚠️ 最高风险
 
 **文件：**
