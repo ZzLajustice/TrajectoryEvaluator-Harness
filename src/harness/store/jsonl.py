@@ -35,6 +35,9 @@ class JsonlStore:
         self._buffers: dict[str, list[str]] = {}
         self._last_seq: dict[str, int] = {}
         self._lock = asyncio.Lock()
+        # 落盘串行化。与 `_lock` 分开是刻意的：`append` 只需 `_lock`
+        # （换缓冲区是内存操作，必须快），而真正的写盘由 `_write_lock` 排队。
+        self._write_lock = asyncio.Lock()
         self._dirty = False
 
     async def append(self, event: Any) -> None:
@@ -53,13 +56,31 @@ class JsonlStore:
             self._dirty = True
 
     async def flush(self) -> None:
-        """把队列里的内容落盘。幂等。"""
-        async with self._lock:
-            if not self._dirty:
-                return
-            pending, self._buffers, self._dirty = self._buffers, {}, False
-        for rid, lines in pending.items():
-            await asyncio.to_thread(self._append_lines, self._root / f"{rid}.jsonl", lines)
+        """把队列里的内容落盘。幂等。
+
+        ## 为什么整个函数都要持 `_write_lock`
+
+        并发 suite（`--concurrency 8`）共享同一个 store，flush 会被多个 run 同时调用。
+        换缓冲区在锁内、写盘在锁外的话有两个后果，且**都是静默的**：
+
+        1. 两个 flush 可能同时往同一个 `<run_id>.jsonl` 写 —— 两个 `open("a")`
+           句柄交错写，文件里出现半行 JSON。症状是读回来时 `JSONDecodeError`。
+        2. `flush()` 可能在别人的写还没落地时就返回（它只看 `_dirty`，
+           而别人已经清掉了）。`Run.execute` 结尾 `store.get(run_id)` 会先 flush 再读，
+           于是拿到 `KeyError: no trajectory for run ...`。
+
+        两种症状都只在并发下出现，单 run 永远复现不了 —— M6 把它们暴露出来，
+        正是因为第一次出现了共享 store 的多路 run。
+        """
+        async with self._write_lock:
+            async with self._lock:
+                if not self._dirty:
+                    return
+                pending, self._buffers, self._dirty = self._buffers, {}, False
+            for rid, lines in pending.items():
+                await asyncio.to_thread(
+                    self._append_lines, self._root / f"{rid}.jsonl", lines
+                )
 
     @staticmethod
     def _append_lines(path: Path, lines: list[str]) -> None:
