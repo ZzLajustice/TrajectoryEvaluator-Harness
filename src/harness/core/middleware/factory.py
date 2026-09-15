@@ -55,6 +55,11 @@ _FACTORIES: dict[str, Any] = {
     "policy": PolicyMiddleware,
 }
 
+# 公开给 suite 加载器做**加载期校验**用。
+# 没有它的话，拼错的中间件名要到真正构造管道时才报错，
+# 而那时前几条用例的算力已经花掉了。
+KNOWN_MIDDLEWARES: frozenset[str] = frozenset(_FACTORIES)
+
 
 def build_middlewares(specs: Sequence[MiddlewareSpec]) -> list[Any]:
     """按规范顺序构造启用的中间件。"""
