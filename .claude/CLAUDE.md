@@ -6,15 +6,16 @@
 
 ## 当前状态（重要）
 
-**M0–M7 已完成**（任务 1–31 / 共 36）。`src/harness/` 58 个文件，668 条测试全绿。
+**M0–M8 已完成**（任务 1–34 / 共 36）。765 条测试全绿。
 
-已完成的能力：事件模型与只读 `Trajectory`、`RunSpec`/`Run` 双 harness 骨架、6 个 SUT 工具、Windows 进程树执行器、5 个中间件（telemetry 最外层）、budget governor、真 provider + record/replay、suite 加载器（defaults + cases）+ 并发调度器 + SQLite 索引、**4 个评测器**（`TrajectoryMatcher` / `EfficiencyAnalyzer` / `FailureClassifier` / `GroundingChecker`）。
+已完成的能力：事件模型与只读 `Trajectory`、`RunSpec`/`Run` 双 harness 骨架、6 个 SUT 工具、Windows 进程树执行器、5 个中间件（telemetry 最外层）、budget governor、真 provider + record/replay、suite 加载器 + 并发调度器 + SQLite 索引、4 个评测器（`TrajectoryMatcher` / `EfficiencyAnalyzer` / `FailureClassifier` / `GroundingChecker`）、**聚合与快照 + 终端/HTML 报告 + baseline diff + CI 门禁**。
 
-`harness run` 支持的开关：`--evaluate` / `--concurrency` / `--case` / `--record` / `--replay` / `--out` / `--workdir`。
+五个 CLI 命令：`run` / `trace` / `report` / `diff` / `ci`。
+退出码契约：`0` 通过 · `1` 门禁未达标 · `2` 配置错误 · `3` 预算超限 · `4` 基线缺失。
 
-**尚未实现**（后续里程碑）：报告与 diff（M8）、judge 工具与 `JudgeClient`（M9）、`MetaEvaluator`（M10）、adapters/`ci`/用例集（M11）。`tests/test_architecture.py` 属 M11，目前**还不存在** —— 架构约束暂时只由 `uv run lint-imports` 守着。
+**尚未实现**（后续里程碑）：judge 工具与 `JudgeClient`（M9）、`MetaEvaluator`（M10）、adapters/用例集/README（M11）。`tests/test_architecture.py` 属 M11，目前**还不存在** —— 架构约束暂时只由 `uv run lint-imports` 守着。
 
-下一步是 [Part 3 计划](docs/superpowers/plans/) 的 M8（任务 32–34）。
+下一步是 [Part 3 计划](docs/superpowers/plans/) 的 M9（任务 35，双 Harness 对称 + 元评测）。
 
 ## 文档地图
 
@@ -47,6 +48,10 @@
 - **评测器白名单只有一份**：`evalrunner.EVALUATOR_REGISTRY`。suite 加载器引用它，不另抄一份清单 —— 两份必然漂移，且方向恰好是"加载期放行、运行期才炸"
 - **一次 suite 共用一个 `CompositeStore`**。多路 run 并发 append，靠单写者队列落盘。改 store 的并发语义前先看 `tests/store/` 里的并发测试
 - **评测器调度住在 `evaluators/base.py::run_evaluators`**，不在组装层。它只用到 L0 类型，第三方写评测器时 import 一个模块就同时拿到基类和调度器
+- **`runs/` 目录的文件名统一在 `store/layout.py`**（`latest.json` / `index.db` / `.jsonl`）。报告层不许 import 组装层，所以这类共用常量必须住在 `store`
+- **指标口径写在报告里**（`report/terminal.py::METRIC_DEFINITIONS`）。`pass@k` 在本项目里是"至少一次通过的 case 占比"，**不是**经典无偏估计量 —— 名字沿用业界叫法但语义不同，不写明一定被读错
+- **HTML 报告必须自包含**：ECharts 是 vendor 进仓库并内联的（见 `static/README.md`）。**不要**写 `assert "http://" not in html` —— ECharts 含 `http://www.w3.org/2000/svg` 这类 XML 命名空间常量，那条断言必然失败且测错了东西
+- **`autoescape` 管不到 `<script>` 内部**。嵌进脚本的 JSON 必须把 `<` `>` `&` 转成 `\uXXXX`（见 `report/html.py::_safe_json`）
 - **提交前必须四个门全绿**：`uv run pytest` / `ruff check .` / `pyright` / `lint-imports`。四条命令与 `git commit` **分开执行**，先读输出再提交（曾把 ruff 错误一起提交过）
 - **Windows 特有约束**（踩过坑，勿改）：
   - `asyncio.create_subprocess_exec` 只支持 `ProactorEventLoop`，**绝不设置 `WindowsSelectorEventLoopPolicy`**
