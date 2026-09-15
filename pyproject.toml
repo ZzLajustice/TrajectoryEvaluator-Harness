@@ -1,0 +1,168 @@
+[project]
+name = "harness"
+description = "Agent process-level evaluation harness"
+readme = "README.md"
+requires-python = ">=3.12"
+dynamic = ["version"]
+
+dependencies = [
+  # ---- LLM 客户端 ----
+  # openai 3.x 覆盖 OpenAI 及所有 OpenAI 兼容厂商 (DeepSeek/通义/Moonshot/Groq/vLLM/Ollama)
+  # 注意：它依赖 httpx2，与 litellm 的 openai<3 + httpx<1 硬冲突
+  "openai>=3.13,<4",
+  "httpx2>=2.12,<3",              # http_client 注入 / MockTransport 必需
+
+  # ---- 数据模型与配置 ----
+  "pydantic>=2.13,<3",
+  "pydantic-settings>=2.15,<3",
+  "python-dotenv>=1.1,<2",
+
+  # ---- 并发与可靠性 ----
+  # 异步原语用裸 asyncio（stdlib），不引入 anyio —— 见 docs/tech-stack.md §4.1
+  "tenacity>=9.1.4,<10",
+  "tiktoken>=0.14,<1",            # OpenAI 系 + 兜底近似
+
+  # ---- 存储 ----
+  "jsonlines>=4,<5",
+  "zstandard>=0.24,<1",           # 轨迹压缩
+
+  # ---- 数据格式 ----
+  "pyyaml>=6.0.3,<7",             # 只用 yaml.safe_load
+
+  # ---- CLI ----
+  "typer>=0.27,<1",
+  # typer 的传递依赖。必须排除已知缺陷版本：
+  # 8.2.0/8.2.2/8.3.0/8.3.1 破坏 optional flag values (pallets/click#3084)，8.3.2 才修
+  "click>=8.3.2",
+  "rich>=14.1,<16",               # 避开 14.0.0；15.x 用于终端表格与颜色
+
+  # ---- 报告 ----
+  "jinja2>=3.1.6,<4",
+]
+
+[project.scripts]
+harness = "harness.cli:app"
+
+[project.optional-dependencies]
+# 额外厂商 SDK（按需，避免核心依赖膨胀）
+anthropic = ["anthropic>=1.5,<2"]
+
+# ⚠️ 刻意不提供 litellm extra。
+# litellm 依赖 openai>=2.20,<3，与我们的 openai>=3.13 硬冲突。
+# uv 会把所有 extras 解析进同一个 lock，因此「把 litellm 放 extra」这个方案
+# 根本不成立 —— 它只能存在于完全独立的 venv。详见 docs/tech-stack.md §0、§1。
+
+# 非 OpenAI tokenizer 精确估算（DeepSeek / Qwen / Moonshot）
+tokenizers = ["tokenizers>=0.23,<1"]
+
+# 可观测性：GenAI semconv 全部仍为 Development，故整包可选
+otel = [
+  "opentelemetry-sdk>=1.44,<2",
+  "opentelemetry-exporter-otlp-proto-http>=1.44,<2",
+  "opentelemetry-instrumentation-httpx>=0.65b0,<1",  # 内含 HTTPX2ClientInstrumentor
+  "opentelemetry-util-genai>=1.1b0,<2",
+  # 切勿安装 PyPI 上的 opentelemetry-instrumentation-httpx2（0.0.0 空壳）
+]
+
+# 分析层（DuckDB 直查 JSONL，不做主存储）
+analytics = ["duckdb>=1.5,<2", "pyarrow>=17,<27"]
+
+# 高性能 JSON 编码（仅在 profiling 显示瓶颈时启用）
+fastjson = ["orjson>=3.12,<4"]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.4,<10",
+  "pytest-asyncio>=1.4,<2",       # 配 asyncio_mode="auto"，与裸 asyncio 一致
+  "pytest-cov>=7,<8",
+  "pytest-mock>=3.14,<4",
+  "pytest-xdist[psutil]>=3.8",    # 配 --dist worksteal
+  "pytest-timeout>=2.4,<3",
+  # 下界刻意宽松：我们只用 @given 与基础策略，不需要新特性。
+  # 把下界设成"当前最新版"会持续与 exclude-newer 的冷却窗口冲突。
+  "hypothesis>=6.100,<7",
+  "vcrpy>=8.3,<9",                # 已支持 httpx2（respx 尚不支持）
+  "pytest-recording>=0.13.4,<1",
+  "ruff>=0.16,<0.17",
+  "pyright>=1.1.400",             # CI gate（下界放宽，见上条说明）
+  "pre-commit>=4.6,<5",
+  "import-linter>=2.15,<3",
+]
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/harness"]
+
+# HTML 报告模板 + ECharts (6.1.0 min ≈ 1095KB) 作为 package data
+[tool.hatch.build.targets.wheel.force-include]
+"src/harness/static" = "harness/static"
+
+[tool.uv]
+# 供应链防护（langfuse 同款）：只解析发布满 7 天的版本
+exclude-newer = "7 days"
+
+# 定向豁免 —— 判定标准：
+#   「我们自己主动跟进的一流厂商 SDK」，其发版节奏快于 7 天，
+#   严格窗口会持续把它们压回旧版本（实测 openai 3.9~3.14 全在 7 天内发布，
+#   anthropic 1.5.0 发布于 5 天前）。
+#   冷却期防的是第三方包被投毒，这些 SDK 由厂商自己发布，风险性质不同。
+# 其余全部包（尤其 ~60 个传递依赖 —— 投毒高发区）继续受完整保护。
+exclude-newer-package = { openai = false, anthropic = false }
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "D", "I", "B", "DTZ", "TID251", "PLE", "SIM101"]
+ignore = ["E203", "E501", "D10", "D212", "D415", "B006", "B008", "B904", "B905"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# 强制走 httpx2，避免同一个包内混用两套 HTTP 栈
+"httpx".msg = "Use httpx2 (pydantic fork). Mixing httpx and httpx2 breaks the OpenAI SDK."
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"            # async def 自动识别，无需 pytestmark
+addopts = "-ra --color=yes --dist worksteal"
+norecursedirs = ["tests/fixtures/cassettes"]
+markers = ["live: requires real API key and network, skipped by default"]
+filterwarnings = ["error::DeprecationWarning"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+include = ["src", "tests"]
+
+[tool.importlinter]
+root_packages = ["harness"]
+
+[[tool.importlinter.contracts]]
+name = "evaluators must not depend on core"
+type = "forbidden"
+source_modules = ["harness.evaluators"]
+forbidden_modules = [
+  "harness.core", "harness.orchestration", "harness.providers",
+  "harness.store", "harness.report", "harness.adapters", "harness.cli",
+]
+
+[[tool.importlinter.contracts]]
+name = "layered architecture"
+type = "layers"
+layers = [
+  "harness.cli",
+  "harness.orchestration",
+  "harness.report | harness.adapters | harness.evaluators",
+  "harness.core | harness.store | harness.providers",
+  "harness.contracts",
+  "harness.events",
+]

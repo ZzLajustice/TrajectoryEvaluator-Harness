@@ -69,10 +69,19 @@ harness/                        ← 仓库根
 **文件：**
 - 创建：`pyproject.toml`
 - 创建：`.gitignore`
+- 创建：`.gitattributes`
 - 创建：`.pre-commit-config.yaml`
+- 创建：`README.md`（`[project] readme` 指向它，缺了会阻塞构建）
+- 创建：`src/harness/cli.py`（**最小骨架**，见下方说明 —— 任务 11 才补齐子命令）
 - 创建：`src/harness/__init__.py`
 - 创建：`tests/__init__.py`
 - 创建：`src/harness/{events,contracts,core,store,providers,evaluators,orchestration,testing,adapters,report}/__init__.py`
+
+> **⚠️ 为什么任务 1 就要建 `cli.py`**：import-linter 的 `layers` 契约要求每个具名层**模块必须存在**，否则 `lint-imports` 直接报
+> `Missing layer 'harness.cli': module harness.cli does not exist`（而非校验通过）。
+> 同时 `[project.scripts] harness = "harness.cli:app"` 也引用它。
+>
+> 内容只需一个 `typer.Typer` 实例 `app` 与空 `@app.callback()`。**不要**在这里提前写子命令。
 
 - [ ] **步骤 1：创建项目虚拟环境**
 
@@ -155,10 +164,29 @@ build/
 
 ```bash
 "$UV" sync --all-groups
-"$UV" run python -c "import harness, pydantic, openai, httpx2, anyio; print('ok')"
+"$UV" run python -c "import harness, pydantic, openai, httpx2; print('ok')"
 ```
 
-预期：输出 `ok`。
+预期：输出 `ok`，约 71 个包。
+
+> **⚠️ `exclude-newer` 与版本下界的冲突（实测踩过，勿重复踩）**
+>
+> `exclude-newer = "7 days"` 的冷却窗口会拒绝 7 天内发布的版本。如果依赖的**版本下界设成"当前最新版"**，解析必然失败——实测连续撞了四次：
+>
+> | 包 | 下界 | 窗口内最新 | 结果 |
+> |---|---|---|---|
+> | `openai` | 3.13 | 3.8.0 | ✗ 3.9~3.14 全在 7 天内发布 |
+> | `anthropic` | 1.5 | 1.4.0 | ✗ 1.5.0 发布于 5 天前 |
+> | `hypothesis` | 6.168 | 6.167.1 | ✗ 只差 14 小时 |
+> | `pyright` | 1.1.414 | 1.1.411 | ✗ |
+>
+> **两条对策**：
+> 1. **下界表达「我们真正需要的最低版本」，不是「现在最新的版本」**。工具类依赖（`hypothesis`、`pyright`、`ruff`）下界一律放宽，我们不需要它们的新特性
+> 2. **只对「自己主动跟进的一流厂商 SDK」做定向豁免**（`exclude-newer-package`），冷却期防的是第三方包被投毒，这些由厂商自己发布，风险性质不同
+>
+> **动手前先批量核对**：写脚本查每个包在窗口内的最新版本，确认满足下界，比逐个撞错快得多。
+>
+> 另注：`litellm` **不能作为 extra 声明**——它依赖 `openai>=2.20,<3`，与核心 `openai>=3.13` 硬冲突。uv 会把所有 extras 解析进同一个 lock，所以「放 extra」这个方案根本不成立，它只能存在于完全独立的 venv。
 
 - [ ] **步骤 5：验证架构约束基线**
 

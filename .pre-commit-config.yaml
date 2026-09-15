@@ -1,0 +1,24 @@
+# pre-commit 4.6.x
+# 只放快速、确定性的检查。类型检查（pyright）与架构约束（lint-imports）
+# 放在 CI —— 它们要读整个代码库，不适合每次 commit 都跑。
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^docs/          # 文档里的行尾空格有时是刻意对齐
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: ["--fix=lf"]       # 与 .gitattributes 的 eol=lf 保持一致
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.7
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
