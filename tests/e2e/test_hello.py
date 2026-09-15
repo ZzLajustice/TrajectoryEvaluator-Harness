@@ -174,3 +174,23 @@ def test_record_and_replay_are_mutually_exclusive(tmp_path):
                       "--replay", str(tmp_path / "b.json")])
     assert result.exit_code == 2
     assert "mutually exclusive" in result.output
+
+
+# ---- 中间件真的接进了端到端路径 ----
+def test_configured_middlewares_do_not_break_a_normal_run(tmp_path):
+    """hello.yaml 启用了四个中间件 —— 正常路径不能被拦死。"""
+    result = _run_hello(tmp_path)
+    assert result.exit_code == 0, result.output
+    assert "ok" in result.output
+
+
+def test_task_prompt_from_suite_reaches_the_model(tmp_path):
+    """Suite 里的 task 必须出现在轨迹的 RUN_START 上。
+
+    缺了它评测器无法知道这个 run 在做什么。
+    """
+    _run_hello(tmp_path)
+    first = json.loads(
+        next(tmp_path.glob("*.jsonl")).read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert first["task"] == "Say hello and finish."

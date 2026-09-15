@@ -121,7 +121,10 @@ class LLMResponse:
     finish_reason: str | None
     usage: Usage
     latency_ms: int
-    # ★ provider 原始响应 —— replay 无损性的唯一保证
+    # provider 响应的结构化副本（SDK 的 model_dump()，非字节级原文）。
+    # 用途是审计与未来扩展的逃生舱 —— 归一化会丢掉 reasoning_content /
+    # logprobs 这类我们当前不关心的字段。
+    # 重放的保真度由 LLMResponse 自身的序列化保证，**不依赖 raw**。
     raw: dict[str, Any] = field(default_factory=dict)
 
 

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from harness.contracts.protocols import LLMRequest, Message
 from harness.contracts.spec import RunStatus
+from harness.core.budget import BudgetExceeded
 from harness.events.types import (
     ErrorEvent,
     EventType,
@@ -35,9 +36,21 @@ if TYPE_CHECKING:
 
 
 async def agent_loop(ctx: RunContext) -> RunStatus:
-    max_turns = ctx.spec.budget.max_turns  # 轮次上限的唯一真相源
+    # `while True` 而非 `range(max_turns)`：**governor 是轮次上限的唯一权威**。
+    #
+    # 早先用 `range(max_turns)` 时，轮次上限被两处强制 —— 循环边界与
+    # governor 各管一次，结果是 `range` 先退出、返回 MAX_TURNS，
+    # governor 那条分支永远走不到（终态语义因此变得不可预测）。
+    #
+    # 终止性由 governor 保证：`check_turn(turn)` 在 `turn >= max_turns` 时
+    # 必定返回非 None，而 `turn` 每轮递增。
+    turn = 0
+    while True:
+        # 预算检查放循环开头 —— 这是**终止性保证**，防死循环。
+        # 超限返回独立终态而非抛异常：终止不是"出错"。
+        if (stop := ctx.governor.check_turn(turn)) is not None:
+            return stop
 
-    for turn in range(max_turns):
         ctx.current_turn = turn
         ctx.turns_executed = turn + 1
 
@@ -80,7 +93,11 @@ async def agent_loop(ctx: RunContext) -> RunStatus:
             latency_ms=resp.latency_ms,
             raw=resp.raw,
         ))
-        ctx.usage = ctx.usage + resp.usage
+        try:
+            ctx.governor.charge_usage(resp.usage)
+        except BudgetExceeded:
+            # 用量超限同样是**独立终态** —— 不是 LLM 错误
+            return RunStatus.BUDGET_EXCEEDED
         ctx.context.append_assistant(resp)
 
         if not resp.tool_calls:
@@ -102,7 +119,16 @@ async def agent_loop(ctx: RunContext) -> RunStatus:
                 ctx.final_output = result.content
                 return RunStatus.OK
 
-    return RunStatus.MAX_TURNS
+        # 压缩检查放轮末：本轮的工具结果已经进上下文，此时判断最准。
+        # 事件由这里填充 run_id / seq —— ContextManager 不该知道自己在哪个 run 里。
+        if ctx.context.needs_compaction():
+            template = ctx.context.compact()
+            if template is not None:
+                ctx.emit(template.model_copy(update={
+                    "run_id": ctx.run_id, "seq": ctx.next_seq(), "turn": turn,
+                }))
+
+        turn += 1
 
 
 def _to_provider_request(ctx: RunContext, messages: list[Message]) -> LLMRequest:

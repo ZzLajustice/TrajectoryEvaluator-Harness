@@ -37,6 +37,7 @@ from harness.contracts.protocols import (
 )
 from harness.contracts.results import Usage
 from harness.contracts.spec import RunSpec, RunStatus
+from harness.core.budget import BudgetGovernor
 from harness.core.context import ContextManager
 from harness.core.middleware.context import ToolCallContext
 from harness.core.pipeline import build_pipeline
@@ -116,16 +117,24 @@ class RunContext:
         self.deps = deps
         self.provider = deps.provider
         self.tool_names = deps.tools.names()
-        self.context = ContextManager(system_prompt=spec.system_prompt)
 
         self._seq = 0
         self.turns_executed = 0
         self.tool_calls_count = 0
         self.current_turn = 0
         self.final_output: str | None = None
-        self.usage = Usage()
 
         self.sink = _EventSink(deps.store)
+        # governor 必须先建：BudgetMiddleware 从 ctx.budget 取它
+        self.governor = BudgetGovernor(
+            spec.budget, run_id=run_id, emit=self.emit, next_seq=self.next_seq
+        )
+        # 任务提示词在这里进入上下文 —— 缺了它 agent 不知道要做什么
+        self.context = ContextManager(
+            system_prompt=spec.system_prompt,
+            token_budget=spec.budget.max_input_tokens,
+            task=spec.task.prompt if spec.task else None,
+        )
         # 管道只构建一次，复用整个 run
         self.tool_chain = build_pipeline(list(deps.middlewares), self._execute_tool)
 
@@ -148,6 +157,7 @@ class RunContext:
         """
         ctx = ToolCallContext(
             run_id=self.run_id, turn=turn, call=call, spec=self.spec,
+            budget=self.governor,
             emit=self.emit, next_seq=self.next_seq,
         )
         try:
@@ -209,9 +219,9 @@ class Run:
             status=status.value, final_output=ctx.final_output,
             turns=ctx.turns_executed,
             tool_calls=ctx.tool_calls_count,
-            input_tokens=ctx.usage.input_tokens,
-            output_tokens=ctx.usage.output_tokens,
-            cost_usd=ctx.usage.cost_usd,
+            input_tokens=ctx.governor.usage().input_tokens,
+            output_tokens=ctx.governor.usage().output_tokens,
+            cost_usd=ctx.governor.usage().cost_usd,
             duration_s=duration,
         ))
         await ctx.sink.aclose()
@@ -220,7 +230,7 @@ class Run:
         end = trajectory.end()
         return RunResult(
             run_id=self.run_id, status=status, final_output=ctx.final_output,
-            trajectory=trajectory, usage=ctx.usage,
+            trajectory=trajectory, usage=ctx.governor.usage(),
             turns=ctx.turns_executed,
             tool_calls=end.tool_calls if end else 0,
             duration_s=duration, error=error,

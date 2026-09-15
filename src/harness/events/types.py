@@ -29,6 +29,12 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 EVENT_SCHEMA_VERSION = 1
 
+# 预算维度。提取成具名类型而非内联 Literal —— `BudgetGovernor` 也要用它，
+# 内联的话两边各写一份，加维度时必然漏改一处。
+BudgetDimension = Literal[
+    "turns", "tool_calls", "input_tokens", "output_tokens", "usd", "wall_clock"
+]
+
 
 class EventType(StrEnum):
     RUN_START = "run.start"
@@ -145,9 +151,7 @@ class ContextCompactEvent(Event):
 
 class BudgetEvent(Event):
     type: Literal[EventType.BUDGET_EVENT] = EventType.BUDGET_EVENT
-    dimension: Literal[
-        "turns", "tool_calls", "input_tokens", "output_tokens", "usd", "wall_clock"
-    ]
+    dimension: BudgetDimension
     limit: float = 0.0
     consumed: float = 0.0
     threshold: float | None = None

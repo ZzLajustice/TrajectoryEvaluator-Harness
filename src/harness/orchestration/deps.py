@@ -1,12 +1,18 @@
 """装配层：把 suite 配置翻译成 `RunSpec` + `RunDeps`。
 
-## 本模块是 M1 的最小版
+## 当前覆盖
 
-只支持 fake provider + 单条任务。完整装配（中间件工厂、judge runner、
-评测器调度、并发 suite）在**任务 27** 补齐。
+  ✓ fake provider + record/replay 包装
+  ✓ 完整 SUT 工具集（6 个）
+  ✓ 中间件工厂（按规范顺序构造）
+  ✓ 任务提示词装配
 
-之所以现在就建：`cli.py` 需要一个组装点，而"先立接口、后补实现"
-可以让任务 27 只改这一个文件，不用动 CLI。
+## 仍待补齐（任务 27）
+
+  并发 suite、多 case 调度、评测器调度、judge runner
+
+之所以先建这个组装点：`cli.py` 只需要一个入口，
+后续扩展集中在本文件，不用动 CLI。
 """
 
 from __future__ import annotations
@@ -19,7 +25,16 @@ from typing import Any
 import yaml
 
 from harness.contracts.protocols import LLMResponse
-from harness.contracts.spec import Budget, ModelRef, RunRole, RunSpec, ToolPolicy
+from harness.contracts.spec import (
+    Budget,
+    MiddlewareSpec,
+    ModelRef,
+    RunRole,
+    RunSpec,
+    TaskSpec,
+    ToolPolicy,
+)
+from harness.core.middleware.factory import build_middlewares
 from harness.core.registry import ToolRegistry
 from harness.core.run import Run, RunDeps, RunResult
 from harness.core.tools.finish import FinishTool
@@ -92,7 +107,7 @@ def load_suite_config(suite_path: Path | str) -> dict[str, Any]:
 
 
 class RunBuilder:
-    """最小装配层。任务 27 会扩展为支持并发 suite、middleware 工厂与评测调度。"""
+    """装配层。任务 27 会扩展为支持并发 suite 与评测调度。"""
 
     def __init__(
         self,
@@ -136,13 +151,21 @@ class RunBuilder:
             role=RunRole.SUT,
             system_prompt=str(cfg.get("system_prompt") or "You are a careful agent."),
             model=ModelRef(provider="fake", model="fake"),
+            task=TaskSpec(case_id=str(cfg.get("name", "case")),
+                          prompt=str(cfg.get("task") or "Say hello and finish.")),
             tools=ToolPolicy(),
             budget=Budget(max_turns=int(cfg.get("max_turns") or 5)),
         )
 
         store = JsonlStore(self.out_dir)
         provider = self._build_provider(cfg)
-        deps = RunDeps(provider=provider, store=store, tools=tools)
+        # 中间件由工厂按**规范顺序**构造 —— suite 只决定启用哪些，不决定顺序
+        middlewares = build_middlewares(
+            [MiddlewareSpec(**m) if isinstance(m, dict) else MiddlewareSpec(name=str(m))
+             for m in (cfg.get("middlewares") or [])]
+        )
+        deps = RunDeps(provider=provider, store=store, tools=tools,
+                       middlewares=middlewares)
 
         try:
             result = await Run(spec, deps).execute()

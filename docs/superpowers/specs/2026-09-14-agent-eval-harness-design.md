@@ -554,6 +554,21 @@ traj = (TB(run_id="r1", task="fix off-by-one in utils.py")
 - **确定性**：同一 cassette 跑两次，`trajectory.jsonl` 归一化后逐字节相同
 - **并发**：20 路 FakeProvider 并发，断言各 run 的 `seq` 独立单调、无串号、无 `database is locked`
 - **预算**：`budget_exceeded` 是独立终态而非 ERROR；`warn_at=0.8` 发 `BUDGET_EVENT(action="warn")`
+
+  > **两个终态的语义区分（实现时明确下来的）**：
+  >
+  > | 终态 | 含义 | 触发 |
+  > |---|---|---|
+  > | `MAX_TURNS` | agent **一直在行动但没收敛** | 轮次用尽 |
+  > | `BUDGET_EXCEEDED` | **其他资源**耗尽 | wall_clock / token / 金额 / 工具调用数 |
+  >
+  > 分开的理由：`FailureClassifier` 需要区分「陷入循环」与「烧完预算」——
+  > 前者是 agent 的策略问题，后者可能是预算配置过紧。
+  > 两者都不是 `llm_error`（那是外部依赖的问题，与 agent 能力无关）。
+  >
+  > **`BudgetGovernor` 是轮次上限的唯一权威**，loop 不再用 `range(max_turns)` 自建边界 ——
+  > 否则上限被两处强制，循环边界先退出，governor 的分支永远走不到，
+  > 终态语义变得不可预测。
 - **Grounding 正反例**：「`TOOL_RESULT` 是 `1 passed`，assistant 说 `All 12 tests passed`」必须检出；「assistant 正确复述 `1 passed`」必须不误报
 
 ---
