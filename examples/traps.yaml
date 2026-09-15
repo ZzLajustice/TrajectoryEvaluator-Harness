@@ -1,0 +1,149 @@
+# M7 验收用例：每条 case 用 fake_script **确定性地**制造一个失败模式。
+#
+# 用途是验收「规则分类器对 expected_failure_modes 的命中率」——
+# `tests/e2e/test_traps.py` 会跑完这一套并算命中率。
+#
+# 每条的 expected_failure_modes 只有一个模式，且该模式是**构造出来的**而不是
+# 碰运气碰上的：fake_script 是脚本化的，跑一百次都是同一个失败。
+# 这样命中率的数字才有意义 —— 它度量的是分类器，不是模型的随机性。
+name: traps
+version: "1"
+
+defaults:
+  model: {provider: fake, model: fake}
+  budget: {max_turns: 6}
+  system_prompt: "You are a coding agent."
+  middlewares: [permission, sandbox, budget, telemetry]
+  concurrency: 4
+
+cases:
+  # ---- FC1: step repetition —— 同工具同参数连调 4 次 ----
+  - case_id: fm_step_repetition
+    tier: easy
+    task: {case_id: fm_step_repetition, prompt: "read the file"}
+    workspace: {kind: tempdir}
+    expected_failure_modes: [step_repetition]
+    fake_script:
+      - {tool: read_file, arguments: {path: "missing.py"}}
+      - {tool: read_file, arguments: {path: "missing.py"}}
+      - {tool: read_file, arguments: {path: "missing.py"}}
+      - {tool: read_file, arguments: {path: "missing.py"}}
+      - {tool: finish, arguments: {summary: "done"}}
+    graders:
+      - name: FailureClassifier
+        config: {expected_modes: [step_repetition]}
+
+  # ---- FC1: unaware of termination —— 直接给文本，不调 finish ----
+  - case_id: fm_unaware_of_termination
+    tier: easy
+    task: {case_id: fm_unaware_of_termination, prompt: "say something"}
+    workspace: {kind: tempdir}
+    expected_failure_modes: [unaware_of_termination]
+    fake_script:
+      - {text: "I think that should do it."}
+    graders:
+      - name: FailureClassifier
+        config: {expected_modes: [unaware_of_termination]}
+
+  # ---- 单 agent 补充: 幻觉工具 —— 调一个不存在的工具 ----
+  - case_id: fm_hallucinated_tool
+    tier: medium
+    task: {case_id: fm_hallucinated_tool, prompt: "inspect the repo"}
+    workspace: {kind: tempdir}
+    expected_failure_modes: [hallucinated_tool]
+    fake_script:
+      - {tool: git_blame, arguments: {path: "a.py"}}
+      - {tool: finish, arguments: {summary: "done"}}
+    graders:
+      - name: FailureClassifier
+        config: {expected_modes: [hallucinated_tool]}
+
+  # ---- 单 agent 补充: 幻觉参数 —— 参数指向不存在的路径 ----
+  - case_id: fm_hallucinated_tool_args
+    tier: easy
+    task: {case_id: fm_hallucinated_tool_args, prompt: "read utils.py"}
+    workspace: {kind: tempdir}
+    expected_failure_modes: [hallucinated_tool_args]
+    fake_script:
+      - {tool: read_file, arguments: {path: "does_not_exist.py"}}
+      - {tool: finish, arguments: {summary: "done"}}
+    graders:
+      - name: FailureClassifier
+        config: {expected_modes: [hallucinated_tool_args]}
+
+  # ---- FC1: 忽略工具返回 —— 失败后原样重试 ----
+  - case_id: fm_ignored_tool_result
+    tier: medium
+    task: {case_id: fm_ignored_tool_result, prompt: "run the tests"}
+    workspace: {kind: tempdir}
+    expected_failure_modes: [ignored_tool_result]
+    fake_script:
+      - {tool: run_command, arguments: {argv: ["python", "-c", "import sys; sys.exit(1)"]}}
+      - {tool: run_command, arguments: {argv: ["python", "-c", "import sys; sys.exit(1)"]}}
+      - {tool: finish, arguments: {summary: "done"}}
+    graders:
+      - name: FailureClassifier
+        config: {expected_modes: [ignored_tool_result]}
+
+  # ---- 单 agent 补充: 预算内未收敛 ----
+  # max_output_tokens 设成 1 —— 第一次 LLM 响应就会超限，
+  # 走 charge_usage → BudgetExceeded → BUDGET_EXCEEDED，确定性触发。
+  - case_id: fm_budget_not_converged
+    tier: medium
+    task: {case_id: fm_budget_not_converged, prompt: "keep working"}
+    workspace: {kind: tempdir}
+    expected_failure_modes: [budget_not_converged]
+    sut:
+      budget: {max_turns: 6, max_output_tokens: 1}
+    fake_script:
+      - {tool: list_dir, arguments: {path: "."}}
+      - {tool: list_dir, arguments: {path: "."}}
+    graders:
+      - name: FailureClassifier
+        config: {expected_modes: [budget_not_converged]}
+
+  # ---- FC3: 过早终止 —— 改了文件没跑测试就 finish ----
+  - case_id: fm_premature_termination
+    tier: medium
+    task: {case_id: fm_premature_termination, prompt: "fix the bug"}
+    workspace: {kind: tempdir}
+    expected_failure_modes: [premature_termination]
+    fake_script:
+      - {tool: write_file, arguments: {path: "fix.py", content: "x = 1"}}
+      - {tool: finish, arguments: {summary: "fixed"}}
+    graders:
+      - name: FailureClassifier
+        config: {expected_modes: [premature_termination]}
+
+  # ---- FC3: 缺失验证 —— 只改不验 ----
+  # 脚本必须写全：FakeProvider 用尽后**抛 IndexError**（M3 的刻意设计 ——
+  # "agent 多调了一次模型"是真实 bug 信号，不该静默重复最后一条响应）。
+  # 少写一条的后果是 run 以 llm_error 结束，看起来像模型 API 挂了。
+  - case_id: fm_no_verification
+    tier: medium
+    task: {case_id: fm_no_verification, prompt: "fix the bug"}
+    workspace: {kind: tempdir}
+    expected_failure_modes: [no_incomplete_verification]
+    fake_script:
+      - {tool: write_file, arguments: {path: "fix.py", content: "x = 1"}}
+      - {text: "I have written the fix."}
+    graders:
+      - name: FailureClassifier
+        config: {expected_modes: [no_incomplete_verification]}
+
+  # ---- 联合验证：幻觉工具输出由 GroundingChecker 负责，不是 FailureClassifier ----
+  # 这条同时进了两个评测器，证明二者职责不重叠。
+  - case_id: fm_fabricated_result
+    tier: hard
+    task: {case_id: fm_fabricated_result, prompt: "run the tests and report"}
+    workspace: {kind: tempdir}
+    fake_script:
+      - {tool: run_command, arguments: {argv: ["python", "-c", "print('1 passed')"]}}
+      - {text: "All 12 tests passed. The fix is complete."}
+    graders:
+      - name: GroundingChecker
+      - name: TrajectoryMatcher
+        config:
+          mode: in_order
+          expected: [[run_command, {}]]
+          tool_args_match_mode: ignore

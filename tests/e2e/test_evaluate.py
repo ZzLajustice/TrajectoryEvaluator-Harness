@@ -105,8 +105,10 @@ def test_unknown_grader_is_rejected_even_without_the_flag(tmp_path):
     开关"本身就是个陷阱：真跑起来才发现 typo，前面几条用例的钱已经花了。
     """
     suite = tmp_path / "typo.yaml"
+    # 用一个**真的不存在**的名字 —— 之前借用了 FailureClassifier，
+    # 它在 M7 注册之后这条测试就失去了意义（会变成"合法配置被误拒"）
     payload = HELLO.read_text(encoding="utf-8").replace(
-        "name: TrajectoryMatcher", "name: FailureClassifier"
+        "name: TrajectoryMatcher", "name: NoSuchGrader"
     )
     suite.write_text(payload, encoding="utf-8", newline="\n")
 

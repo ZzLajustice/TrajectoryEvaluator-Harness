@@ -17,12 +17,18 @@ from __future__ import annotations
 from typing import Any
 
 from harness.evaluators.efficiency import EfficiencyAnalyzer
+from harness.evaluators.failure_classify import FailureClassifier
+from harness.evaluators.grounding import GroundingChecker
 from harness.evaluators.trajectory_match import TrajectoryMatcher
 
 # 允许在 suite 里引用的评测器。
+# **这是白名单的唯一一份** —— suite.py 直接引用它做加载期校验，
+# 不另抄一份清单（两份必然漂移，且方向恰好是"加载期放行、运行期才炸"）。
 EVALUATOR_REGISTRY: dict[str, type] = {
     "TrajectoryMatcher": TrajectoryMatcher,
     "EfficiencyAnalyzer": EfficiencyAnalyzer,
+    "FailureClassifier": FailureClassifier,
+    "GroundingChecker": GroundingChecker,
 }
 
 
