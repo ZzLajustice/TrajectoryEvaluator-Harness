@@ -39,17 +39,31 @@ from harness.core.tools.fs import ListDirTool, ReadFileTool, WriteFileTool
 from harness.core.tools.search import SearchTool
 from harness.core.tools.shell import RunCommandTool
 from harness.evaluators.base import run_evaluators
+from harness.orchestration.aggregator import (
+    aggregate,
+    to_case_outcomes,
+    write_snapshot,
+)
 from harness.orchestration.evalrunner import build_evaluators
-from harness.orchestration.scheduler import Scheduler
+from harness.orchestration.scheduler import Scheduler, Skipped
 from harness.orchestration.suite import CaseSpec, Suite, SuiteConfigError, load_suite
 from harness.providers.fake import FakeProvider, text_response, tool_call_response
 from harness.providers.recording import RecordingProvider, ReplayProvider
 from harness.providers.response_pool import ResponsePool
 from harness.store.composite import CompositeStore
+from harness.store.layout import SNAPSHOT_NAME
 
 
 class CaseExecutionError(RuntimeError):
     """有 case 以异常收场（不是 agent 失败，是执行本身炸了）。映射到退出码 1。"""
+
+
+class SuiteCostExceeded(RuntimeError):
+    """suite 级成本上限被击穿，剩余 case 未启动。映射到退出码 3。
+
+    **不是 per-case 的失败**：`Budget.max_usd` 已经管住单条 case 跑飞；
+    这条管的是"17 条用例一共花了多少"。两者的报警对象不同。
+    """
 
 
 def build_tool_registry() -> ToolRegistry:
@@ -127,6 +141,9 @@ class RunBuilder:
         self.record = Path(record) if record else None
         self.replay = Path(replay) if replay else None
         self.workdir = Path(workdir)
+        # suite 级累计成本。只有 "suite 一共花了多少" 这类门禁需要它，
+        # 单条 case 的成本在 RunResult.usage 里。
+        self._spent_usd = 0.0
 
     # ---- provider ----
     def _build_provider(self, script: list[dict[str, Any]]) -> Any:
@@ -156,9 +173,11 @@ class RunBuilder:
         evaluate: bool = False,
         concurrency: int | None = None,
         case_ids: list[str] | None = None,
+        max_cost: float | None = None,
     ) -> list[RunOutcome]:
         return asyncio.run(self.run_suite(
-            suite_path, evaluate=evaluate, concurrency=concurrency, case_ids=case_ids
+            suite_path, evaluate=evaluate, concurrency=concurrency,
+            case_ids=case_ids, max_cost=max_cost,
         ))
 
     async def run_suite(
@@ -168,6 +187,7 @@ class RunBuilder:
         evaluate: bool = False,
         concurrency: int | None = None,
         case_ids: list[str] | None = None,
+        max_cost: float | None = None,
     ) -> list[RunOutcome]:
         suite = load_suite(suite_path)
         cases = _select_cases(suite, case_ids)
@@ -197,9 +217,27 @@ class RunBuilder:
                     else suite.defaults.concurrency
                 )
             )
-            results = await scheduler.gather(items)
+            results = await scheduler.gather(
+                items,
+                # suite 级成本上限：超了就不再启动新 case。
+                # 已经在跑的那几条让它们跑完 —— 中途掐断会留下半截沙箱，
+                # 而"少跑一条"比"跑一条半"更容易解释。
+                should_stop=(
+                    (lambda: self._spent_usd >= max_cost)
+                    if max_cost is not None else None
+                ),
+            )
         finally:
             await store.close()
+
+        # 成本超限：剩下的没跑。必须显式报出来 —— 静默返回一部分结果
+        # 会让"只跑了 5 条 / 共 17 条"看起来像"17 条都跑了"。
+        skipped = [k for k, v in results if isinstance(v, Skipped)]
+        if skipped:
+            raise SuiteCostExceeded(
+                f"suite cost {self._spent_usd:.4f} exceeded cap {max_cost}; "
+                f"{len(skipped)} case(s) not started: {skipped}"
+            )
 
         # 崩溃的 case 必须显式报出来，不能静默丢
         failures = [(k, v) for k, v in results if isinstance(v, BaseException)]
@@ -209,7 +247,18 @@ class RunBuilder:
                 f"{len(failures)}/{len(results)} case(s) failed to execute: {detail}"
             )
 
-        return [outcome for _, outcome in results]
+        outcomes = [outcome for _, outcome in results]
+        # 落 case 级快照 —— diff / ci / report 都从它读。
+        # 在 run_suite 里写而不是让 CLI 记得写：忘了写的话 diff 会安静地
+        # 拿一份过期的基线去比，而那看起来像"没有回归"。
+        self._write_snapshot(outcomes, suite)
+        return outcomes
+
+    def _write_snapshot(self, outcomes: list[RunOutcome], suite: Suite) -> None:
+        cases = to_case_outcomes(outcomes)
+        write_snapshot(aggregate(cases), cases, self.out_dir / SNAPSHOT_NAME,
+                       suite_name=suite.name)
+
 
     # ---- 单条 case ----
     async def _run_case(
@@ -251,6 +300,7 @@ class RunBuilder:
             if isinstance(provider, RecordingProvider):
                 provider.save()
 
+        self._spent_usd += result.usage.cost_usd
         return RunOutcome(result=result, evals=evals,
                           case_id=case.case_id, repeat_index=repeat_index)
 

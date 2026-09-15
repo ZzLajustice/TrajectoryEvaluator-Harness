@@ -23,9 +23,21 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 Work = Callable[[], Awaitable[Any]]
+
+
+@dataclass(frozen=True, slots=True)
+class Skipped:
+    """因 suite 级预算耗尽而**未启动**。
+
+    刻意不是异常，也不是失败：这条 case 根本没跑，
+    把它记成失败会污染 pass_rate。
+    """
+
+    reason: str
 
 
 class Scheduler:
@@ -43,7 +55,12 @@ class Scheduler:
         self.case_timeout_s = case_timeout_s
         self.fail_fast = fail_fast
 
-    async def gather(self, items: Sequence[tuple[str, Work]]) -> list[tuple[str, Any]]:
+    async def gather(
+        self,
+        items: Sequence[tuple[str, Work]],
+        *,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> list[tuple[str, Any]]:
         keys = [key for key, _ in items]
         dupes = sorted({k for k in keys if keys.count(k) > 1})
         if dupes:
@@ -55,6 +72,11 @@ class Scheduler:
 
         async def guarded(key: str, work: Work) -> None:
             async with sem:
+                # 在**拿到信号量之后**判，而不是排队之前 ——
+                # 排队时判的话，已经在等的那些照样会跑，等于没停。
+                if should_stop is not None and should_stop():
+                    results[key] = Skipped("suite budget exhausted before this case started")
+                    return
                 try:
                     if self.case_timeout_s is None:
                         results[key] = await work()
