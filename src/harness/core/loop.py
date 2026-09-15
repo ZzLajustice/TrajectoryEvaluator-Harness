@@ -1,0 +1,124 @@
+"""Agent 主循环。
+
+**核心 loop 里不得出现任何评测代码** —— 评测埋点全部经中间件管道。
+本模块只负责：构造请求 → 调模型 → 落事件 → 执行工具 → 判断终止。
+
+## 三种终止语义（FailureClassifier 依赖这个区分）
+
+    finish 调用成功      → OK        （正常完成）
+    纯文本、无 tool_calls → NO_FINISH （agent 停止行动了，但没说完成）
+    轮次耗尽             → MAX_TURNS  （持续行动但从不收敛）
+
+后两者都归入 MAST 的「Unaware of termination」，但分开记录能看出行为差异：
+NO_FINISH 是模型"以为说完了"，MAX_TURNS 是模型"陷在循环里"。
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from harness.contracts.protocols import LLMRequest, Message
+from harness.contracts.spec import RunStatus
+from harness.events.types import (
+    ErrorEvent,
+    EventType,
+    LLMRequestEvent,
+    LLMResponseEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+    TurnStartEvent,
+)
+
+if TYPE_CHECKING:
+    from harness.contracts.protocols import ToolResult
+    from harness.core.run import RunContext
+
+
+async def agent_loop(ctx: RunContext) -> RunStatus:
+    max_turns = ctx.spec.budget.max_turns  # 轮次上限的唯一真相源
+
+    for turn in range(max_turns):
+        ctx.current_turn = turn
+        ctx.turns_executed = turn + 1
+
+        ctx.emit(TurnStartEvent(
+            run_id=ctx.run_id, seq=ctx.next_seq(), type=EventType.TURN_START, turn=turn,
+        ))
+
+        built = ctx.context.build_request(turn)
+        ctx.emit(LLMRequestEvent(
+            run_id=ctx.run_id, seq=ctx.next_seq(), type=EventType.LLM_REQUEST,
+            turn=turn, model=ctx.spec.model.model,
+            messages_digest=built.digest, message_count=len(built.messages),
+            context_tokens_est=ctx.context.estimated_tokens(),
+            tools_offered=ctx.tool_names,
+        ))
+
+        try:
+            resp = await ctx.provider.complete(
+                _to_provider_request(ctx, built.messages)
+            )
+        except Exception as exc:  # noqa: BLE001
+            ctx.emit(ErrorEvent(
+                run_id=ctx.run_id, seq=ctx.next_seq(), type=EventType.ERROR,
+                turn=turn, where="llm", error_type=type(exc).__name__,
+                message=str(exc), retryable=False,
+            ))
+            return RunStatus.LLM_ERROR
+
+        ctx.emit(LLMResponseEvent(
+            run_id=ctx.run_id, seq=ctx.next_seq(), type=EventType.LLM_RESPONSE,
+            turn=turn, model=resp.model, content=resp.content, text=resp.text,
+            tool_calls=[
+                {"call_id": c.call_id, "name": c.name, "arguments": c.arguments}
+                for c in resp.tool_calls
+            ],
+            finish_reason=resp.finish_reason,
+            input_tokens=resp.usage.input_tokens,
+            output_tokens=resp.usage.output_tokens,
+            cost_usd=resp.usage.cost_usd,
+            latency_ms=resp.latency_ms,
+            raw=resp.raw,
+        ))
+        ctx.usage = ctx.usage + resp.usage
+        ctx.context.append_assistant(resp)
+
+        if not resp.tool_calls:
+            # 模型停止行动但没调 finish —— 立即终止，不白烧剩余轮次
+            return RunStatus.NO_FINISH
+
+        for call in resp.tool_calls:
+            ctx.tool_calls_count += 1
+            ctx.emit(ToolCallEvent(
+                run_id=ctx.run_id, seq=ctx.next_seq(), type=EventType.TOOL_CALL,
+                turn=turn, call_id=call.call_id, name=call.name,
+                arguments=call.arguments,
+            ))
+            result = await ctx.invoke_tool(call, turn)
+            ctx.emit(_result_event(ctx, turn, result))
+            ctx.context.append_tool_result(result)
+
+            if call.name == "finish" and result.ok:
+                ctx.final_output = result.content
+                return RunStatus.OK
+
+    return RunStatus.MAX_TURNS
+
+
+def _to_provider_request(ctx: RunContext, messages: list[Message]) -> LLMRequest:
+    return LLMRequest(
+        model=ctx.spec.model.model,
+        messages=list(messages),
+        tools=ctx.deps.tools.schemas(ctx.spec.tools) or None,
+        temperature=ctx.spec.model.temperature,
+        max_output_tokens=ctx.spec.model.max_output_tokens,
+    )
+
+
+def _result_event(ctx: RunContext, turn: int, r: ToolResult) -> ToolResultEvent:
+    return ToolResultEvent(
+        run_id=ctx.run_id, seq=ctx.next_seq(), type=EventType.TOOL_RESULT,
+        turn=turn, call_id=r.call_id, name=r.name, ok=r.ok, content=r.content,
+        error=r.error, error_type=r.error_type, duration_ms=r.duration_ms,
+        truncated=r.truncated, denied_by=r.denied_by,
+    )
