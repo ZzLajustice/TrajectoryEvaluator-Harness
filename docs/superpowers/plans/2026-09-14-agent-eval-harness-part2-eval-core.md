@@ -267,7 +267,7 @@ class OpenAICompatProvider:
             finish_reason=choice.get("finish_reason"),
             usage=usage_from_openai(raw.get("usage")),
             latency_ms=latency_ms,
-            raw=raw,                       # ★ replay 无损性的唯一保证
+            raw=raw,                       # 结构化副本，供审计与扩展（非字节级原文）
         )
 
     async def aclose(self) -> None:

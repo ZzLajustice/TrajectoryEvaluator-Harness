@@ -39,7 +39,7 @@
 
 **`Usage.__add__` 让成本可聚合**：`(a + b) + c == a + (b + c)` 锁的是**可结合性**——成本会在多个层级聚合（turn → run → eval → suite），若加法不满足结合律，聚合顺序就会影响最终数字，报告失去可比性。把聚合逻辑放进数据本身还有个好处：新增字段（如 `cache_write_tokens`）时只改一处，所有聚合点自动正确。注意聚合的是 provider 上报的实测 usage（tech-stack §4.4：tiktoken 覆盖不了国内模型，偏差可超 30%），不是本地估算。
 
-**`LLMResponse.raw: dict`** 保存 provider 原始响应——**replay 无损性的唯一保证**。抽象层永远会漏建模某些字段，`raw` 是留给未来的逃生舱（与任务 2 的 `attrs` 同一模式）。
+**`LLMResponse.raw: dict`** 保存 provider 响应的**结构化副本**（注意：是 SDK 的 `model_dump()`，**不是字节级原文**）。抽象层永远会漏建模某些字段，`raw` 是留给**审计与未来扩展**的逃生舱（与任务 2 的 `attrs` 同一模式）。重放的保真度由 `LLMResponse` 的序列化保证，**不依赖 `raw`**。
 
 **`Message.content: list[dict]` 用 Anthropic 风格 content blocks**（`text` / `tool_use` / `tool_result`）：这是"归一化方向必须是富 → 简"的落点（设计文档 §3.6）。内部用表达能力更强的那个表示，映射到 OpenAI chat 是**可预测的有损**；反过来（简 → 富）会凭空发明结构。
 

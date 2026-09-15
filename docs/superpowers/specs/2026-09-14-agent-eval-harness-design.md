@@ -134,7 +134,9 @@ class Event(BaseModel):
 关键字段：
 - `ToolResultEvent.content` — 工具结果**原文**，`GroundingChecker` 依赖
 - `ToolResultEvent.denied_by` — 被哪个中间件拦下
-- `LLMResponseEvent.raw` — provider 原始响应，**replay 无损性的唯一保证**
+- `LLMResponseEvent.raw` — provider 响应的**结构化副本**（SDK 的 `model_dump()`，**不是字节级原文**）。
+  用途是**审计**与**未来扩展的逃生舱** —— 归一化会丢掉 `reasoning_content` / `logprobs`
+  这类我们当前不关心的字段。**重放的保真度由 `LLMResponse` 的序列化保证，不依赖 `raw`。**
 - `RunStartEvent.spec_json` — 完整 RunSpec 快照，评测器无需回查 suite
 
 ### 3.2 轨迹视图
@@ -183,7 +185,10 @@ class Run:
 
 调度器只依赖 `RunLike` 协议，因此 `ImportedRun` 不必伪装成 agent loop。
 
-`RunSpec` 字段：`role` / `system_prompt` / `model: ModelRef` / `task` / `tools: ToolPolicy` / `middlewares: list[MiddlewareSpec]` / `budget` / `workspace` / `max_turns` / `agent_name` / `metadata`，外加 `fingerprint()`（影响行为的字段的 sha256，用于 diff 时判断两次 run 是否可比）。
+`RunSpec` 字段：`role` / `system_prompt` / `model: ModelRef` / `task` / `tools: ToolPolicy` / `middlewares: list[MiddlewareSpec]` / `budget` / `workspace` / `agent_name` / `metadata`，外加 `fingerprint()`。
+
+> **轮次上限只有一处真相源：`Budget.max_turns`。** `RunSpec` 刻意不设 `max_turns` ——
+> 两个字段都能配、语义重叠、实现读哪个不明确，是真实踩过的坑。（影响行为的字段的 sha256，用于 diff 时判断两次 run 是否可比）。
 
 `MiddlewareSpec` 只存**名字 + 配置**不存实例——这是 RunSpec 可完整 JSON 序列化的前提。
 

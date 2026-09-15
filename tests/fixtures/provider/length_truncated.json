@@ -1,0 +1,20 @@
+{
+  "id": "chatcmpl-1",
+  "object": "chat.completion",
+  "model": "deepseek-chat",
+  "choices": [
+    {
+      "index": 0,
+      "finish_reason": "length",
+      "message": {
+        "role": "assistant",
+        "content": "truncated outpu"
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 5,
+    "completion_tokens": 40,
+    "total_tokens": 45
+  }
+}

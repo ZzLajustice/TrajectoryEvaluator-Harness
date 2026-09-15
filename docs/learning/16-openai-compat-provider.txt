@@ -52,7 +52,7 @@ DEEPSEEK_TOOL_CHOICE_WARNING = (
 
 这类 quirk（thinking 开启时不支持强制工具调用、不支持 schema 强约束的结构化输出）在统一抽象层里**根本无从表达**——它会被静默降级成"某个参数被忽略"。对应用来说无所谓，对评测来说等于瞎了一只眼。连最主打"多厂商"的 promptfoo 也是走官方 SDK 路线。
 
-### `raw` 是 replay 无损性的唯一保证
+### `raw` 是审计与扩展的逃生舱
 
 ```python
 completion = await self._sdk.chat.completions.create(**kwargs)
