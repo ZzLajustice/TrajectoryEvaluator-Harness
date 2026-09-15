@@ -35,11 +35,23 @@ def main() -> None:
 def run(
     suite: Path = typer.Option(..., "--suite", "-s", help="suite 配置文件路径。"),
     out: Path = typer.Option(Path("runs"), "--out", help="轨迹输出目录。"),
+    record: Path | None = typer.Option(
+        None, "--record", help="把 provider 响应录制到指定文件。"),
+    replay: Path | None = typer.Option(
+        None, "--replay", help="从指定文件回放 provider 响应（不发起真实调用）。"),
 ) -> None:
-    """运行一个 suite 并打印每条 run 的摘要。"""
+    """运行一个 suite 并打印每条 run 的摘要。
+
+    `--record` 与 `--replay` 互斥：录制要打真实模型，回放则完全离线。
+    """
+    if record is not None and replay is not None:
+        typer.echo("config error: --record and --replay are mutually exclusive", err=True)
+        raise typer.Exit(EXIT_CONFIG_ERROR)
+
     try:
-        results = RunBuilder(out_dir=out).run_suite_sync(suite)
-    except (FileNotFoundError, SuiteConfigError) as exc:
+        builder = RunBuilder(out_dir=out, record=record, replay=replay)
+        results = builder.run_suite_sync(suite)
+    except (FileNotFoundError, SuiteConfigError, KeyError) as exc:
         typer.echo(f"config error: {exc}", err=True)
         raise typer.Exit(EXIT_CONFIG_ERROR) from exc
 

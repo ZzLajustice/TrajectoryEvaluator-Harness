@@ -27,6 +27,8 @@ from harness.core.tools.fs import ListDirTool, ReadFileTool, WriteFileTool
 from harness.core.tools.search import SearchTool
 from harness.core.tools.shell import RunCommandTool
 from harness.providers.fake import FakeProvider, text_response, tool_call_response
+from harness.providers.recording import RecordingProvider, ReplayProvider
+from harness.providers.response_pool import ResponsePool
 from harness.store.jsonl import JsonlStore
 
 
@@ -92,8 +94,35 @@ def load_suite_config(suite_path: Path | str) -> dict[str, Any]:
 class RunBuilder:
     """最小装配层。任务 27 会扩展为支持并发 suite、middleware 工厂与评测调度。"""
 
-    def __init__(self, *, out_dir: Path | str = Path("runs")) -> None:
+    def __init__(
+        self,
+        *,
+        out_dir: Path | str = Path("runs"),
+        record: Path | str | None = None,
+        replay: Path | str | None = None,
+    ) -> None:
         self.out_dir = Path(out_dir)
+        self.record = Path(record) if record else None
+        self.replay = Path(replay) if replay else None
+
+    def _build_provider(self, cfg: dict[str, Any]) -> Any:
+        """按 record/replay 模式包装 provider。
+
+        装饰器模式让录制与厂商**解耦** —— provider 实现不知道录制功能存在。
+        """
+        if self.replay is not None:
+            # 提前校验而非留给运行期：缺失的 cassette 是**配置错误**，
+            # 不是 run 失败。若留给 ReplayProvider 抛 KeyError，loop 的异常兜底
+            # 会把它转成 LLM_ERROR，最终 CLI 退出码为 0 —— 配置问题被伪装成正常结束。
+            if not self.replay.exists():
+                raise FileNotFoundError(f"replay cassette not found: {self.replay}")
+            # 回放命不中时默认抛错而非静默降级（静默降级会让结果无声地错掉）
+            return ReplayProvider(ResponsePool(self.replay))
+
+        base = FakeProvider(build_fake_script(cfg.get("fake_script")))
+        if self.record is not None:
+            return RecordingProvider(base, ResponsePool(self.record))
+        return base
 
     def run_suite_sync(self, suite_path: Path | str) -> list[RunResult]:
         return asyncio.run(self.run_suite(suite_path))
@@ -112,13 +141,17 @@ class RunBuilder:
         )
 
         store = JsonlStore(self.out_dir)
-        deps = RunDeps(
-            provider=FakeProvider(build_fake_script(cfg.get("fake_script"))),
-            store=store,
-            tools=tools,
-        )
-        result = await Run(spec, deps).execute()
-        await store.close()
+        provider = self._build_provider(cfg)
+        deps = RunDeps(provider=provider, store=store, tools=tools)
+
+        try:
+            result = await Run(spec, deps).execute()
+        finally:
+            await store.close()
+            # 录制内容必须在退出前落盘 —— 否则录了个寂寞
+            if isinstance(provider, RecordingProvider):
+                provider.save()
+
         return [result]
 
 

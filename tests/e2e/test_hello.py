@@ -128,3 +128,49 @@ def test_hello_run_records_the_tools_it_offered(tmp_path):
     assert set(first["tools"]) == {
         "finish", "list_dir", "read_file", "run_command", "search", "write_file",
     }
+
+
+# ---- 录制 / 回放 ----
+def _invoke(args: list[str]):
+    return CliRunner().invoke(app, args)
+
+
+def test_record_then_replay_is_reproducible(tmp_path):
+    """录制后离线回放，结果必须一致 —— 这是评测可信度的基础。"""
+    cassette = tmp_path / "cassette.json"
+    run_dir = tmp_path / "runs"
+
+    rec = _invoke(["run", "--suite", str(HELLO), "--out", str(run_dir),
+                   "--record", str(cassette)])
+    assert rec.exit_code == 0, rec.output
+    assert cassette.exists(), "record must persist the cassette"
+
+    replay_dir = tmp_path / "replayed"
+    rep = _invoke(["run", "--suite", str(HELLO), "--out", str(replay_dir),
+                   "--replay", str(cassette)])
+    assert rep.exit_code == 0, rep.output
+
+    # 两次运行的轨迹除时间戳与 run_id 外应完全一致
+    def _events(d: Path) -> list[dict]:
+        f = next(d.glob("*.jsonl"))
+        return [json.loads(line) for line in f.read_text(encoding="utf-8").splitlines()
+                if line.strip()]
+
+    a, b = _events(run_dir), _events(replay_dir)
+    assert [e["type"] for e in a] == [e["type"] for e in b]
+    assert [e["seq"] for e in a] == [e["seq"] for e in b]
+
+
+def test_replay_without_a_cassette_fails_loudly(tmp_path):
+    """没录过就回放必须报错，而不是静默返回空响应。"""
+    result = _invoke(["run", "--suite", str(HELLO), "--out", str(tmp_path / "o"),
+                      "--replay", str(tmp_path / "absent.json")])
+    assert result.exit_code == 2
+
+
+def test_record_and_replay_are_mutually_exclusive(tmp_path):
+    result = _invoke(["run", "--suite", str(HELLO), "--out", str(tmp_path / "o"),
+                      "--record", str(tmp_path / "a.json"),
+                      "--replay", str(tmp_path / "b.json")])
+    assert result.exit_code == 2
+    assert "mutually exclusive" in result.output
