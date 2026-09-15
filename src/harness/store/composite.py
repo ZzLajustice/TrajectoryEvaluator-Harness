@@ -26,9 +26,8 @@ from typing import Any
 from harness.contracts.results import EvalResult
 from harness.events.trajectory import Trajectory
 from harness.store.jsonl import JsonlStore
+from harness.store.layout import INDEX_NAME
 from harness.store.sqlite import SqliteIndex
-
-_INDEX_FILENAME = "index.db"
 
 
 class CompositeStore:
@@ -37,7 +36,7 @@ class CompositeStore:
     def __init__(self, *, root: Path | str) -> None:
         self._root = Path(root)
         self._jsonl = JsonlStore(self._root)
-        self._index = SqliteIndex(self._root / _INDEX_FILENAME)
+        self._index = SqliteIndex(self._root / INDEX_NAME)
 
     # ---- TrajectoryStore ----
     async def append(self, event: Any) -> None:
