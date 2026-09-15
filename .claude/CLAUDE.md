@@ -6,15 +6,15 @@
 
 ## 当前状态（重要）
 
-**M0–M6 已完成**（任务 1–29 / 共 36）。`src/harness/` 56 个文件，612 条测试全绿。
+**M0–M7 已完成**（任务 1–31 / 共 36）。`src/harness/` 58 个文件，668 条测试全绿。
 
-已完成的能力：事件模型与只读 `Trajectory`、`RunSpec`/`Run` 双 harness 骨架、6 个 SUT 工具、Windows 进程树执行器、5 个中间件（telemetry 最外层）、budget governor、真 provider + record/replay、评测器框架 + `TrajectoryBuilder` + `TrajectoryMatcher` + `EfficiencyAnalyzer`、**suite 加载器（defaults + cases）+ 并发调度器 + SQLite 索引**。
+已完成的能力：事件模型与只读 `Trajectory`、`RunSpec`/`Run` 双 harness 骨架、6 个 SUT 工具、Windows 进程树执行器、5 个中间件（telemetry 最外层）、budget governor、真 provider + record/replay、suite 加载器（defaults + cases）+ 并发调度器 + SQLite 索引、**4 个评测器**（`TrajectoryMatcher` / `EfficiencyAnalyzer` / `FailureClassifier` / `GroundingChecker`）。
 
 `harness run` 支持的开关：`--evaluate` / `--concurrency` / `--case` / `--record` / `--replay` / `--out` / `--workdir`。
 
-**尚未实现**（后续里程碑）：`FailureClassifier`/`GroundingChecker`（M7）、报告与 diff（M8）、judge 工具与 `JudgeClient`（M9）、`MetaEvaluator`（M10）、adapters/`ci`/用例集（M11）。`tests/test_architecture.py` 属 M11，目前**还不存在** —— 架构约束暂时只由 `uv run lint-imports` 守着。
+**尚未实现**（后续里程碑）：报告与 diff（M8）、judge 工具与 `JudgeClient`（M9）、`MetaEvaluator`（M10）、adapters/`ci`/用例集（M11）。`tests/test_architecture.py` 属 M11，目前**还不存在** —— 架构约束暂时只由 `uv run lint-imports` 守着。
 
-下一步是 [Part 3 计划](docs/superpowers/plans/) 的 M7（任务 30–31）。
+下一步是 [Part 3 计划](docs/superpowers/plans/) 的 M8（任务 32–34）。
 
 ## 文档地图
 
