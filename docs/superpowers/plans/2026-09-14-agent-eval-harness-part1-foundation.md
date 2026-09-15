@@ -1541,7 +1541,7 @@ def _ctx():
 
 顺序语义：middlewares[0] 是最外层。
     [Permission, Sandbox, Budget, Telemetry, Policy] + terminal=Executor
-得到：TOOL_CALL → Permission → Sandbox → Budget → Telemetry → Policy → Executor → TOOL_RESULT
+得到：TOOL_CALL → Telemetry → Permission → Sandbox → Budget → Policy → Executor → TOOL_RESULT
 
 用 reduce 从最内层向外包裹（比递归 call_next 干净，避免闭包捕获陷阱）。
 管道在 Run.__init__ 只构建一次，复用整个 run。

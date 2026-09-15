@@ -8,7 +8,9 @@
 
 **痛点一：核心 loop 会被污染。** 权限校验、沙箱检查、预算扣减、遥测埋点、策略拒绝——这五件事如果写成 `loop.py` 里的 if/else，评测逻辑就住进了执行逻辑里。设计文档 §3.4 把话写死了：**「评测埋点、越权检测、预算控制全是插件，核心 loop 里不得出现任何评测代码。」** 这条不是代码风格，而是架构支点：`evaluators` 包之所以能完全不 import `core`（import-linter 的 `forbidden` 契约），前提就是评测能力不寄生在 loop 上。
 
-**痛点二：顺序语义错了，整套防线失效。** 计划注释写得很直白：顺序语义错了，评测埋点、越权检测、预算控制全部失效。规范顺序是 `TOOL_CALL → Permission → Sandbox → Budget → Telemetry → Policy → Executor → TOOL_RESULT`。如果顺序反了，最外层的会变成 Policy，于是 Permission 拦下的调用仍然扣了预算、埋了点；更糟的是 Sandbox 落到 Executor 里面，检查发生在进程已经起来之后——等于没有检查。
+**落地时的修正**：初版把 `Telemetry` 排在决策中间件**之内**，结果是 Permission/Sandbox/Budget 的拒绝完全不被记录（短路后 telemetry 没机会跑）。正确原则是**观察者在最外层、决策者在内层** —— `Telemetry` 不做决策，放最外层不削弱安全性，却能记录每一次拒绝。
+
+**痛点二：顺序语义错了，整套防线失效。** 计划注释写得很直白：顺序语义错了，评测埋点、越权检测、预算控制全部失效。规范顺序是 `TOOL_CALL → Telemetry → Permission → Sandbox → Budget → Policy → Executor → TOOL_RESULT`。如果顺序反了，最外层的会变成 Policy，于是 Permission 拦下的调用仍然扣了预算、埋了点；更糟的是 Sandbox 落到 Executor 里面，检查发生在进程已经起来之后——等于没有检查。
 
 **为什么它必须在 M1 就做。** 任务 10 的 `RunContext.__init__` 要调用 `build_pipeline` 构建整条链；管道没定型，`Run` 无法定型，垂直切片就跑不起来。它是「中间件设计的地基」这句话的字面含义。
 

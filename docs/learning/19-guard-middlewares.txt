@@ -80,7 +80,7 @@ if target is None or not target.is_relative_to(root):
 
 ### 顺序：Permission 在最外层
 
-设计文档 §3.4 规定 `Permission → Sandbox → Budget → Telemetry → Policy → Executor`。Permission 排最前，因为它是最便宜、最粗粒度的判定：被 allowlist 挡掉的 `write_file` 不应该先被报成 `path_escape`。**中间件的顺序决定了 `denied_by` 的归因质量**，这就是任务 9 里"顺序语义错了，越权检测全部失效"的具体含义。
+设计文档 §3.4 规定 `Telemetry → Permission → Sandbox → Budget → Policy → Executor`。Permission 排最前，因为它是最便宜、最粗粒度的判定：被 allowlist 挡掉的 `write_file` 不应该先被报成 `path_escape`。**中间件的顺序决定了 `denied_by` 的归因质量**，这就是任务 9 里"顺序语义错了，越权检测全部失效"的具体含义。
 
 ## 4. 使用的技术栈简介
 

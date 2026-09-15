@@ -2454,7 +2454,7 @@ git commit -m "feat(evaluators): EfficiencyAnalyzer with step ratio and redundan
 - [ ] Provider 一致性套件覆盖 ≥2 个实现 × 8 个场景，且**不联网**
 - [ ] `uv run harness run -s examples/hello.yaml --provider deepseek` 能跑通真实模型
 - [ ] `--record` 产出 ResponsePool 文件，`--replay` 离线复跑结果一致
-- [ ] 中间件管道顺序可断言：Permission → Sandbox → Budget → Telemetry → Policy → Executor
+- [ ] 中间件管道顺序可断言：Telemetry → Permission → Sandbox → Budget → Policy → Executor
 - [ ] 超预算 run 以 `budget_exceeded` 结束（不是 `llm_error`）
 - [ ] 压缩发生时 `CONTEXT_COMPACT` 事件落盘
 - [ ] `TrajectoryMatcher` 5 种模式 + `arg_normalizers` 全部可测
