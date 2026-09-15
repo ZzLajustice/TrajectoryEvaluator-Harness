@@ -31,8 +31,8 @@ from harness.events.types import (
     RunStartEvent,
     ToolCallEvent,
     ToolResultEvent,
-    parse_event,
     dump_event,
+    parse_event,
 )
 
 

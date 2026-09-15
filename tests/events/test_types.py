@@ -60,7 +60,7 @@ def test_event_is_frozen():
 
 
 def test_extra_field_is_rejected():
-    """schema 漂移必须立刻报错 —— 临时字段走 attrs 逃生舱。"""
+    """Schema 漂移必须立刻报错 —— 临时字段走 attrs 逃生舱。"""
     with pytest.raises(ValidationError):
         ToolCallEvent(
             run_id="r1", seq=0, type=EventType.TOOL_CALL,

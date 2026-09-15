@@ -38,9 +38,10 @@ def test_event_field_sets_are_frozen():
 
     if not FIXTURE.exists():  # 首次运行生成基线
         FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-        FIXTURE.write_text(
-            json.dumps(actual, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-        )
+        # 显式 newline="\n"：Windows 上 write_text 默认把 \n 翻译成 \r\n，
+        # 会让生成的 fixture 与 .gitattributes 的 eol=lf 不一致。
+        with FIXTURE.open("w", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(actual, indent=2, ensure_ascii=False) + "\n")
 
     expected = json.loads(FIXTURE.read_text(encoding="utf-8"))
     assert actual == expected, (
