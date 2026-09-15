@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -85,6 +86,20 @@ class _EventSink:
         await self._task
 
 
+_RUN_SEQ = itertools.count()
+
+
+def default_run_id() -> str:
+    """默认 run id 生成器。
+
+    **毫秒时间戳单独用是不够的**：`--concurrency 8` 下调度器在同一个事件循环
+    tick 里创建全部 run，`time.time()` 完全相同 → run_id 全部撞车 →
+    多个 run 往同一个 `<run_id>.jsonl` 与控制台行里写，数据互相覆盖。
+    加一个进程内自增序号把同毫秒的 run 区分开。
+    """
+    return f"run_{int(time.time() * 1000)}_{next(_RUN_SEQ):04d}"
+
+
 @dataclass(slots=True)
 class RunDeps:
     """依赖注入点。Run 不认识任何具体实现，因此可用 Fake 替换。"""
@@ -98,9 +113,7 @@ class RunDeps:
     # 而沙箱中间件会因拿不到 root 而静默放行路径越狱。
     executor: Any = None
     workdir: Path | str = "workdir"
-    id_gen: Callable[[], str] = field(
-        default_factory=lambda: lambda: f"run_{int(time.time() * 1000) % 10_000_000}"
-    )
+    id_gen: Callable[[], str] = field(default=default_run_id)
     clock: Callable[[], float] = time.monotonic
 
 

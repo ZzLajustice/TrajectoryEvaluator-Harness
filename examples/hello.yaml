@@ -1,40 +1,48 @@
-# M1 的最小 suite —— 只够跑通一条路径，不是最终格式。
-# 完整的 CaseSpec / SuiteDefaults 在任务 27 落地。
+# 最小 suite —— 一条 case，够跑通端到端。全离线（fake provider）。
+#
+# 这是 task 27 定稿的格式：defaults + cases。`defaults` 里的任何东西
+# 都能被单条 case 覆写（middlewares / fake_script / budget / system_prompt）。
 name: hello
-max_turns: 5
-task: "Say hello and finish."
-system_prompt: "Say hello and finish."
+version: "1"
 
-# 中间件只写"启用哪些"，顺序由 factory 按规范顺序决定
-# （permission → sandbox → budget → telemetry → policy）——
-# 顺序是安全语义，不该由配置决定。
-middlewares:
-  - permission
-  - sandbox
-  - budget
-  - telemetry
+defaults:
+  model: {provider: fake, model: fake}
+  # 轮次上限的唯一真相源是 budget.max_turns —— RunSpec 刻意不设同名字段
+  budget: {max_turns: 5}
+  system_prompt: "Say hello and finish."
+  # 中间件只写"启用哪些"，顺序由 factory 按规范顺序决定
+  # （telemetry → permission → sandbox → budget → policy）——
+  # 顺序是安全语义，不该由配置决定。
+  middlewares: [permission, sandbox, budget, telemetry]
+  concurrency: 4
 
-# 仅在 fake provider 下使用；接入真实模型后本键会被忽略。
-# 每个元素是一条脚本化响应：
-#   {tool: <name>, arguments: {...}}   触发工具调用
-#   {text: <str>}                      纯文本回复
-fake_script:
-  - tool: finish
-    arguments:
-      summary: "hello"
+cases:
+  - case_id: hello
+    tier: easy
+    task:
+      case_id: hello
+      prompt: "Say hello and finish."
+    workspace: {kind: tempdir}
 
-# 评测器：`harness run --evaluate` 时才跑。
-# 名字必须在 evalrunner.EVALUATOR_REGISTRY 白名单里 —— 拼错直接报错退出。
-graders:
-  - name: TrajectoryMatcher
-    config:
-      mode: strict
-      # 参数走 exact 匹配：expected 是 [工具名, 参数] 的列表
-      expected:
-        - [finish, {summary: "hello"}]
-      tool_args_match_mode: exact
+    # 仅在 fake provider 下使用；接入真实模型后本键被忽略。
+    #   {tool: <name>, arguments: {...}}   触发工具调用
+    #   {text: <str>}                      纯文本回复
+    fake_script:
+      - tool: finish
+        arguments:
+          summary: "hello"
 
-  - name: EfficiencyAnalyzer
-    config:
-      # 人工标注的合理路径长度。不声明（0）时步数比报 0.0 而非除零。
-      optimal_steps: 1
+    # 评测器：`harness run --evaluate` 时才跑。
+    # 名字必须在 evalrunner.EVALUATOR_REGISTRY 白名单里 —— 拼错在**加载期**就报错。
+    graders:
+      - name: TrajectoryMatcher
+        config:
+          mode: strict
+          # 参数走 exact 匹配：expected 是 [工具名, 参数] 的列表
+          expected:
+            - [finish, {summary: "hello"}]
+          tool_args_match_mode: exact
+      - name: EfficiencyAnalyzer
+        config:
+          # 人工标注的合理路径长度。不声明（0）时步数比报 0.0 而非除零。
+          optimal_steps: 1

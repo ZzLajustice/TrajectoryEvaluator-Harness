@@ -1,0 +1,95 @@
+# M6 验收用的 5 条用例 —— 全离线，只为验证并发调度真的并发、且不串数据。
+#
+# 每条 case 的 fake_script 不同：如果调度器把 run_id 或 store 用串了，
+# 轨迹里的工具调用序列会张冠李戴，`--evaluate` 的 TrajectoryMatcher 立刻报 FAIL。
+# 这是比"没报错"强得多的证据。
+name: concurrency
+version: "1"
+
+defaults:
+  model: {provider: fake, model: fake}
+  budget: {max_turns: 4}
+  system_prompt: "Do the thing, then finish."
+  middlewares: [permission, sandbox, budget, telemetry]
+  concurrency: 8
+
+cases:
+  - case_id: c1_read
+    tier: easy
+    task: {case_id: c1_read, prompt: "read then finish"}
+    workspace: {kind: tempdir}
+    fake_script:
+      - tool: list_dir
+        arguments: {path: "."}
+      - tool: finish
+        arguments: {summary: "c1"}
+    graders:
+      - name: TrajectoryMatcher
+        config: {mode: in_order, expected: [[list_dir, {}], [finish, {}]],
+                 tool_args_match_mode: ignore}
+      - name: EfficiencyAnalyzer
+        config: {optimal_steps: 2}
+
+  - case_id: c2_write
+    tier: easy
+    task: {case_id: c2_write, prompt: "write then finish"}
+    workspace: {kind: tempdir}
+    fake_script:
+      - tool: write_file
+        arguments: {path: "out.txt", content: "hello"}
+      - tool: read_file
+        arguments: {path: "out.txt"}
+      - tool: finish
+        arguments: {summary: "c2"}
+    graders:
+      - name: TrajectoryMatcher
+        config: {mode: in_order, expected: [[write_file, {}], [read_file, {}], [finish, {}]],
+                 tool_args_match_mode: ignore}
+      - name: EfficiencyAnalyzer
+        config: {optimal_steps: 3}
+
+  - case_id: c3_search
+    tier: medium
+    task: {case_id: c3_search, prompt: "search then finish"}
+    workspace: {kind: tempdir}
+    fake_script:
+      - tool: search
+        arguments: {pattern: "def "}
+      - tool: finish
+        arguments: {summary: "c3"}
+    graders:
+      - name: TrajectoryMatcher
+        config: {mode: in_order, expected: [[search, {}], [finish, {}]],
+                 tool_args_match_mode: ignore}
+      - name: EfficiencyAnalyzer
+        config: {optimal_steps: 2}
+
+  - case_id: c4_repeat
+    tier: medium
+    # 故意重复调用同一个工具 —— EfficiencyAnalyzer 应当报冗余
+    task: {case_id: c4_repeat, prompt: "list twice then finish"}
+    workspace: {kind: tempdir}
+    fake_script:
+      - tool: list_dir
+        arguments: {path: "."}
+      - tool: list_dir
+        arguments: {path: "."}
+      - tool: list_dir
+        arguments: {path: "."}
+      - tool: finish
+        arguments: {summary: "c4"}
+    graders:
+      - name: EfficiencyAnalyzer
+        config: {optimal_steps: 4, redundancy_tolerance: 2}
+
+  - case_id: c5_no_finish
+    tier: hard
+    # 不调 finish 直接给文本 → run 以 no_finish 结束。
+    # 这条是用来证明"失败的 case 也被完整记录"的，不是错误。
+    task: {case_id: c5_no_finish, prompt: "just talk"}
+    workspace: {kind: tempdir}
+    fake_script:
+      - text: "I have no idea what to do."
+    graders:
+      - name: EfficiencyAnalyzer
+        config: {optimal_steps: 1}

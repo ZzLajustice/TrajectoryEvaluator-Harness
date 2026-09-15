@@ -19,7 +19,7 @@ HELLO = REPO_ROOT / "examples" / "hello.yaml"
 
 def _run_hello(out: Path):
     return CliRunner().invoke(
-        app, ["run", "--suite", str(HELLO), "--out", str(out)]
+        app, ["run", "--suite", str(HELLO), "--out", str(out), "--workdir", str(out / "wd")]
     )
 
 
@@ -76,7 +76,8 @@ def test_run_summary_is_printed(tmp_path):
 
 def test_trace_command_prints_the_event_stream(tmp_path):
     runner = CliRunner()
-    runner.invoke(app, ["run", "--suite", str(HELLO), "--out", str(tmp_path)])
+    runner.invoke(app, ["run", "--suite", str(HELLO), "--out", str(tmp_path),
+                        "--workdir", str(tmp_path / "wd")])
     run_id = next(tmp_path.glob("*.jsonl")).stem
 
     result = runner.invoke(app, ["trace", "--run-id", run_id, "--out", str(tmp_path)])
@@ -94,7 +95,8 @@ def test_trace_on_unknown_run_exits_nonzero(tmp_path):
 
 def test_missing_suite_exits_with_config_error(tmp_path):
     result = CliRunner().invoke(
-        app, ["run", "--suite", str(tmp_path / "nope.yaml"), "--out", str(tmp_path)]
+        app, ["run", "--suite", str(tmp_path / "nope.yaml"), "--out", str(tmp_path),
+              "--workdir", str(tmp_path / "wd")]
     )
     assert result.exit_code == 2  # 约定：2 = 配置或加载错误
 
@@ -135,18 +137,28 @@ def _invoke(args: list[str]):
     return CliRunner().invoke(app, args)
 
 
+def _wd(out: Path) -> list[str]:
+    """SUT 沙箱必须落在 tmp_path 里。
+
+    默认 `workdir/` 是**项目内**路径（刻意如此：系统 tempdir 会被清掉，
+    跑挂了要能进去看现场）。但测试用默认值的话，每跑一次 pytest
+    就往仓库根写一堆沙箱目录，且失败的 case 按 keep_on_failure 还会被留下。
+    """
+    return ["--workdir", str(out / "wd")]
+
+
 def test_record_then_replay_is_reproducible(tmp_path):
     """录制后离线回放，结果必须一致 —— 这是评测可信度的基础。"""
     cassette = tmp_path / "cassette.json"
     run_dir = tmp_path / "runs"
 
-    rec = _invoke(["run", "--suite", str(HELLO), "--out", str(run_dir),
+    rec = _invoke(["run", "--suite", str(HELLO), "--out", str(run_dir), "--workdir", str(tmp_path / "wd"),
                    "--record", str(cassette)])
     assert rec.exit_code == 0, rec.output
     assert cassette.exists(), "record must persist the cassette"
 
     replay_dir = tmp_path / "replayed"
-    rep = _invoke(["run", "--suite", str(HELLO), "--out", str(replay_dir),
+    rep = _invoke(["run", "--suite", str(HELLO), "--out", str(replay_dir), "--workdir", str(tmp_path / "wd"),
                    "--replay", str(cassette)])
     assert rep.exit_code == 0, rep.output
 
@@ -163,13 +175,13 @@ def test_record_then_replay_is_reproducible(tmp_path):
 
 def test_replay_without_a_cassette_fails_loudly(tmp_path):
     """没录过就回放必须报错，而不是静默返回空响应。"""
-    result = _invoke(["run", "--suite", str(HELLO), "--out", str(tmp_path / "o"),
+    result = _invoke(["run", "--suite", str(HELLO), "--out", str(tmp_path / "o"), "--workdir", str(tmp_path / "wd"),
                       "--replay", str(tmp_path / "absent.json")])
     assert result.exit_code == 2
 
 
 def test_record_and_replay_are_mutually_exclusive(tmp_path):
-    result = _invoke(["run", "--suite", str(HELLO), "--out", str(tmp_path / "o"),
+    result = _invoke(["run", "--suite", str(HELLO), "--out", str(tmp_path / "o"), "--workdir", str(tmp_path / "wd"),
                       "--record", str(tmp_path / "a.json"),
                       "--replay", str(tmp_path / "b.json")])
     assert result.exit_code == 2

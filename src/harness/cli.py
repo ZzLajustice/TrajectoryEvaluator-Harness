@@ -19,7 +19,7 @@ from pathlib import Path
 
 import typer
 
-from harness.orchestration.deps import RunBuilder, SuiteConfigError
+from harness.orchestration.deps import CaseExecutionError, RunBuilder, SuiteConfigError
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
@@ -29,6 +29,7 @@ _STATUS_MARK = {
     "skipped": "SKIP", "error": "ERROR",
 }
 
+EXIT_NOT_MET = 1
 EXIT_CONFIG_ERROR = 2
 
 
@@ -47,6 +48,13 @@ def run(
         None, "--replay", help="从指定文件回放 provider 响应（不发起真实调用）。"),
     evaluate: bool = typer.Option(
         False, "--evaluate", help="运行 suite 声明的评测器并打印结果。"),
+    concurrency: int | None = typer.Option(
+        None, "--concurrency", "-c", help="并发度；缺省用 suite 的 defaults.concurrency。"),
+    case: list[str] | None = typer.Option(
+        None, "--case", help="只跑指定 case_id（可重复）。"),
+    workdir: Path = typer.Option(
+        Path("workdir"), "--workdir",
+        help="SUT 沙箱根目录，实际路径为 <workdir>/<case_id>/<run_id>/。"),
 ) -> None:
     """运行一个 suite 并打印每条 run 的摘要。
 
@@ -59,17 +67,28 @@ def run(
         raise typer.Exit(EXIT_CONFIG_ERROR)
 
     try:
-        builder = RunBuilder(out_dir=out, record=record, replay=replay)
-        outcomes = builder.run_suite_sync(suite, evaluate=evaluate)
+        builder = RunBuilder(out_dir=out, record=record, replay=replay,
+                             workdir=workdir)
+        outcomes = builder.run_suite_sync(
+            suite, evaluate=evaluate, concurrency=concurrency, case_ids=case
+        )
     except (FileNotFoundError, SuiteConfigError, KeyError, ValueError) as exc:
         typer.echo(f"config error: {exc}", err=True)
         raise typer.Exit(EXIT_CONFIG_ERROR) from exc
+    except CaseExecutionError as exc:
+        # 执行期崩溃（不是 agent 失败）—— 与"门禁未达标"同类，退出码 1
+        typer.echo(f"execution error: {exc}", err=True)
+        raise typer.Exit(EXIT_NOT_MET) from exc
 
     for outcome in outcomes:
         r = outcome.result
         tokens = r.usage.input_tokens + r.usage.output_tokens
+        # case_id 必须打出来 —— 并发跑 5 条时，没有它就无法把某行和某条用例对上
+        label = outcome.case_id or r.run_id
+        if outcome.repeat_index:
+            label = f"{label}#{outcome.repeat_index}"
         typer.echo(
-            f"{r.run_id}  {r.status.value:<18} "
+            f"{label:<24} {r.status.value:<18} "
             f"turns={r.turns:<3} calls={r.tool_calls:<3} tokens={tokens}"
         )
         for ev in outcome.evals:

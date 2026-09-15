@@ -22,7 +22,8 @@ def _invoke(args: list[str]):
 
 
 def _run_hello(out: Path, *extra: str):
-    return _invoke(["run", "--suite", str(HELLO), "--out", str(out), *extra])
+    return _invoke(["run", "--suite", str(HELLO), "--out", str(out),
+                    "--workdir", str(out / "wd"), *extra])
 
 
 def test_evaluate_prints_both_evaluators(tmp_path):
@@ -77,7 +78,7 @@ def test_unknown_evaluator_name_is_a_config_error(tmp_path):
     result = _invoke(["run", "--suite", str(suite), "--out", str(tmp_path / "o"),
                       "--evaluate"])
     assert result.exit_code == 2
-    assert "unknown evaluator" in result.output
+    assert "unknown grader" in result.output
 
 
 def test_a_broken_evaluator_reports_error_not_fail(tmp_path):
@@ -96,23 +97,30 @@ def test_a_broken_evaluator_reports_error_not_fail(tmp_path):
     assert "crashed" in result.output
 
 
-def test_grader_typo_is_ignored_when_not_evaluating(tmp_path):
-    """不评测时连配置都不该解析 —— 引用了尚未实现的评测器不能挡住普通 run。"""
-    suite = tmp_path / "future.yaml"
+def test_unknown_grader_is_rejected_even_without_the_flag(tmp_path):
+    """配置错误在**加载期**暴露，与开不开 `--evaluate` 无关。
+
+    这是 M5 到 M6 的一次语义收紧。M5 时 graders 只在 `--evaluate` 时才解析，
+    于是同一个拼错的名字，加不加 flag 是两种行为 —— 而"配置校验取决于你按了哪个
+    开关"本身就是个陷阱：真跑起来才发现 typo，前面几条用例的钱已经花了。
+    """
+    suite = tmp_path / "typo.yaml"
     payload = HELLO.read_text(encoding="utf-8").replace(
         "name: TrajectoryMatcher", "name: FailureClassifier"
     )
     suite.write_text(payload, encoding="utf-8", newline="\n")
 
-    result = _invoke(["run", "--suite", str(suite), "--out", str(tmp_path / "o")])
-    assert result.exit_code == 0, result.output
+    result = _invoke(["run", "--suite", str(suite), "--out", str(tmp_path / "o"),
+                      "--workdir", str(tmp_path / "wd")])
+    assert result.exit_code == 2
+    assert "unknown grader" in result.output
 
 
 def test_outcomes_pair_the_run_with_its_evals(tmp_path):
     """装配层返回配对好的对象 —— 让调用方自己配迟早会错位且不报错。"""
     from harness.orchestration.deps import RunBuilder
 
-    outcomes = RunBuilder(out_dir=tmp_path).run_suite_sync(HELLO, evaluate=True)
+    outcomes = RunBuilder(out_dir=tmp_path, workdir=tmp_path / "wd").run_suite_sync(HELLO, evaluate=True)
     assert len(outcomes) == 1
 
     outcome = outcomes[0]
@@ -131,8 +139,8 @@ def test_evaluation_does_not_perturb_the_run(tmp_path):
     """
     from harness.orchestration.deps import RunBuilder
 
-    plain = RunBuilder(out_dir=tmp_path / "a").run_suite_sync(HELLO)[0].result
-    graded = RunBuilder(out_dir=tmp_path / "b").run_suite_sync(HELLO, evaluate=True)[0].result
+    plain = RunBuilder(out_dir=tmp_path / "a", workdir=tmp_path / "wd").run_suite_sync(HELLO)[0].result
+    graded = RunBuilder(out_dir=tmp_path / "b", workdir=tmp_path / "wd").run_suite_sync(HELLO, evaluate=True)[0].result
 
     assert plain.status == graded.status
     assert plain.turns == graded.turns
@@ -144,6 +152,6 @@ def test_trajectory_stays_read_only_after_evaluation(tmp_path):
     """评测器只拿到 tuple 视图 —— 想改也改不了（架构层面的只读保证）。"""
     from harness.orchestration.deps import RunBuilder
 
-    outcome = RunBuilder(out_dir=tmp_path).run_suite_sync(HELLO, evaluate=True)[0]
+    outcome = RunBuilder(out_dir=tmp_path, workdir=tmp_path / "wd").run_suite_sync(HELLO, evaluate=True)[0]
     assert isinstance(outcome.result.trajectory.events, tuple)
     assert outcome.result.trajectory.run_id == outcome.result.run_id
