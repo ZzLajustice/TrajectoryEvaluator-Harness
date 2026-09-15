@@ -1935,7 +1935,13 @@ git commit -m "feat(core): agent loop and unified Run abstraction"
 
 > **关于 `deps.py`**：CLI 需要一个把「suite 配置 → `RunSpec` → `Run` + 依赖」组装起来的层。本任务只实现**跑通 hello 所需的最小子集**，完整装配（中间件工厂、judge runner、评测器调度）在 Part 3 任务 27 补齐。这样 M1 不被编排层阻塞，而接口从一开始就成立。
 >
-> **本任务的 suite 格式是临时的**：只需 `name` + 一个 `task.prompt` 字段，不引入 `CaseSpec`/`SuiteDefaults`（那是 Part 3 任务 27 的产物）。fake 响应由 `--script` 指定，不写进 YAML —— 避免为了一个 hello 用例提前设计用例 schema。
+> **本任务的 suite 格式是临时的**：只需 `name` / `max_turns` / `system_prompt` / `fake_script`，
+> **不引入** `CaseSpec`/`SuiteDefaults`（那是 Part 3 任务 27 的产物）。
+>
+> **落地时的修正**：初版设计把假响应放在 `--script` CLI 参数上，实现时改成了 suite 里的
+> `fake_script` 键。理由：场景属于 suite 文件，CLI 参数只是测试后门；写进 YAML 后
+> `harness run -s examples/hello.yaml` 无需额外参数即可跑通，演示与 CI 都更简单。
+> 键名刻意叫 `fake_script` 以标明它**仅对 fake provider 有效**，接入真实模型后被忽略。
 
 ```python
 # src/harness/orchestration/deps.py  —— 任务 11 的最小版
@@ -1957,7 +1963,7 @@ from harness.store.jsonl import JsonlStore
 
 
 def build_fake_script(raw: str | None) -> list:
-    """把 --script 的 JSON 转成 FakeProvider 的响应序列。
+    """把 suite 里 fake_script 的配置转成 FakeProvider 的响应序列。
 
     形如：'[{"tool":"finish","summary":"hello"}]' 或 '[{"text":"thinking"}]'
     """
@@ -2005,7 +2011,7 @@ max_turns: 5
 system_prompt: "Say hello and finish."
 ```
 
-CLI 的 `run` 命令加一个 `--script` 选项传入假响应；e2e 测试用它驱动 `finish`。
+假响应写在 suite 的 `fake_script` 键里，因此 `harness run -s examples/hello.yaml` 无需额外参数。
 
 > **注意**：这里用 `asyncio.run`（不是 `anyio.run`）—— 项目不引入 anyio 依赖，见 [tech-stack.md §4.1](../../tech-stack.md)。
 
@@ -2027,7 +2033,6 @@ from harness.cli import app
 def test_hello_suite_runs_end_to_end(tmp_path):
     result = CliRunner().invoke(app, [
         "run", "--suite", "examples/hello.yaml",
-        "--script", '[{"tool": "finish", "summary": "hello"}]',
         "--out", str(tmp_path),
     ])
     assert result.exit_code == 0, result.output
@@ -2045,7 +2050,6 @@ def test_hello_suite_runs_end_to_end(tmp_path):
 def test_trace_command_prints_event_stream(tmp_path):
     runner = CliRunner()
     runner.invoke(app, ["run", "--suite", "examples/hello.yaml",
-                        "--script", '[{"tool": "finish", "summary": "hello"}]',
                         "--out", str(tmp_path)])
     run_id = next(Path(tmp_path).glob("*.jsonl")).stem
     result = runner.invoke(app, ["trace", "--run-id", run_id, "--out", str(tmp_path)])
@@ -2075,8 +2079,7 @@ app = typer.Typer(no_args_is_help=True, add_completion=False)
 @app.command()
 def run(
     suite: Path = typer.Option(..., "--suite", "-s"),
-    script: str | None = typer.Option(None, "--script",
-                                      help="JSON 假响应序列，驱动 FakeProvider。"),
+    out: Path = typer.Option(Path("runs"), "--out", help="轨迹输出目录。"),
     model: str | None = typer.Option(None, "--model"),
     out: Path = typer.Option(Path("runs"), "--out"),
     evaluate: bool = typer.Option(True, "--evaluate/--no-evaluate"),
@@ -2084,7 +2087,7 @@ def run(
     """运行一个 suite。"""
     from harness.orchestration.deps import RunBuilder
 
-    builder = RunBuilder(script=script, out_dir=out)
+    results = RunBuilder(out_dir=out).run_suite_sync(suite)
     results = builder.run_suite_sync(suite)
     for r in results:
         typer.echo(f"{r.run_id}  {r.status.value:<18} "
@@ -2119,10 +2122,16 @@ def _brief(ev: dict) -> str:
 ```
 
 ```yaml
-# examples/hello.yaml
+# M1 的最小 suite —— 只够跑通一条路径，不是最终格式。
 name: hello
 max_turns: 5
 system_prompt: "Say hello and finish."
+
+# 仅在 fake provider 下使用；接入真实模型后本键会被忽略。
+fake_script:
+  - tool: finish
+    arguments:
+      summary: "hello"
 ```
 
 - [ ] **步骤 4：运行测试验证通过**
@@ -2133,7 +2142,7 @@ system_prompt: "Say hello and finish."
 - [ ] **步骤 5：手工验证端到端**
 
 ```bash
-uv run harness run --suite examples/hello.yaml --script '[{"tool":"finish","summary":"hello"}]'
+uv run harness run --suite examples/hello.yaml
 uv run harness trace --run-id <上一步输出的 run_id>
 ```
 
@@ -2953,7 +2962,7 @@ class Workspace:
 uv run pytest -v                      # 全绿
 uv run lint-imports                   # 架构约束通过
 uv run pyright src/harness            # 类型检查通过
-uv run harness run --suite examples/hello.yaml --script '[{"tool":"finish","summary":"hello"}]'
+uv run harness run --suite examples/hello.yaml
 ```
 
 - [ ] **步骤 6：Commit**
@@ -2970,7 +2979,7 @@ git commit -m "feat(core): Workspace lifecycle with keep-on-failure and patch ap
 - [ ] `uv run pytest` 全绿，且**不产生任何 LLM 网络调用**
 - [ ] `uv run lint-imports` 报告 `0 broken`
 - [ ] `uv run pyright src/harness` 无错误
-- [ ] `harness run --suite examples/hello.yaml --script '[{"tool":"finish","summary":"hello"}]'` 跑通并落 `runs/<id>.jsonl`
+- [ ] `harness run --suite examples/hello.yaml` 跑通并落 `runs/<id>.jsonl`（无需额外参数）
 - [ ] 轨迹含完整的 7 类事件（RUN_START / TURN_START / LLM_REQUEST / LLM_RESPONSE / TOOL_CALL / TOOL_RESULT / RUN_END）
 - [ ] `seq` 严格单调从 0 开始
 - [ ] `run_command` 的孙进程在超时后被杀死，工作目录能正常删除

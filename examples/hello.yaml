@@ -1,0 +1,14 @@
+# M1 的最小 suite —— 只够跑通一条路径，不是最终格式。
+# 完整的 CaseSpec / SuiteDefaults 在任务 27 落地。
+name: hello
+max_turns: 5
+system_prompt: "Say hello and finish."
+
+# 仅在 fake provider 下使用；接入真实模型后本键会被忽略。
+# 每个元素是一条脚本化响应：
+#   {tool: <name>, arguments: {...}}   触发工具调用
+#   {text: <str>}                      纯文本回复
+fake_script:
+  - tool: finish
+    arguments:
+      summary: "hello"
