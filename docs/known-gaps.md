@@ -10,28 +10,51 @@
 
 ## 1. 没有验证的事
 
-### 1.1 真模型路径从未跑过 ⚠️ 最高风险
+### 1.1 真模型：传输链路已验证，**成功响应未验证** ⚠️ 最高风险
 
-**状态**：全部 856 条测试与 5 个示例 suite 都跑在 `FakeProvider` 上。
-`OpenAICompatProvider` 只有 `httpx2.MockTransport` 级的单测（请求体映射、
-响应解析、错误分支），**从未对着真实厂商接口发过一次请求**。
+**接线已经补完**（`credentials.py` + `_build_provider` 分派 + `--model/--provider`），
+并用一个**故意无效的 key** 打了一次真实请求。返回：
 
-**没被覆盖的具体路径**：
+```
+error_type: AuthenticationError
+message: Error code: 401 - {'error': {'message':
+         'Authentication Fails, Your api key: ****test is invalid', ...}}
+```
+
+这一次往返**证实了四件事**：
+
+| 被证实的 | 为什么这个证据成立 |
+|---|---|
+| DNS / TLS / 端点路径正确 | `https://api.deepseek.com` 真的响应了 |
+| 请求体形状被接受 | 否则是 400 而不是 401 |
+| `Authorization` 头真的发出去了 | 服务端回显了假 key 的后四位 `****test` |
+| 错误映射正确 | `error_type=AuthenticationError`、`retryable=False`、run 终态 `llm_error` |
+
+**仍然没验证的**（都需要一个**有效的** key）：
 
 | 路径 | 现状 |
 |---|---|
-| DeepSeek / 通义的真实响应 | 未跑过。厂商是否完全兼容 OpenAI schema 未经验证 |
-| `--record` / `--replay` 对真实模型 | 只在 fake 上验证过录制回放一致 |
-| 真实 token 用量与计费 | `Usage` 的字段能否被真实响应填满，未验证 |
-| 真实模型的工具调用格式差异 | JSON 修复、参数为字符串、并行调用等真实噪声 |
-| 上下文压缩的真实触发 | `CONTEXT_COMPACT` 的阈值在真实 token 计数下是否合理 |
+| **200 响应的解析** | `_from_payload` 的字段映射从未见过真实响应体 |
+| 真实模型的工具调用格式 | `tool_calls` 的结构、参数是否被包成字符串、并行调用 |
+| 真实 token 用量与计费 | `Usage` 能否被真实响应填满；`cost_usd` 目前恒为 0（无价目表） |
+| `--record` / `--replay` 对真实响应 | 只在 fake 上验证过 |
+| 上下文压缩的真实触发 | `CONTEXT_COMPACT` 阈值在真实 token 计数下是否合理 |
 
-**影响**：M3 的验收判据"真模型自动修掉 toyrepo 的 bug"**从未达成**。
-当前状态是"M3 的代码路径已实现且离线可测，但真机验收未做"。
+**影响**：M3 的验收判据"真模型自动修掉 toyrepo 的 bug"仍未达成。
+现在的状态是"M3 的代码路径已实现、传输链路已证实、但成功路径未跑过"。
 
-**怎么补**：配一个 DeepSeek key，跑
-`uv run harness run -s examples/hello.yaml --model deepseek-chat`，
-再跑一条带工具调用的用例。**这是下一步最该做的事**，优先级高于 M11 的收尾。
+**怎么补**：`cp .env.example .env` 填上 key，然后
+
+```bash
+uv run harness run -s examples/deepseek.yaml --evaluate
+```
+
+`deepseek.yaml` 的两条 case 是**分层**的：`smoke_text` 只测纯文本往返，
+`smoke_toolcall` 加一次工具调用 —— 挂了能定位到不同环节。
+
+**⚠️ 模型名**：`deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 弃用，
+现行名字是 `deepseek-v4-flash` / `deepseek-v4-pro`（信息来自公开文档检索，
+跑之前请对一下厂商当前文档）。名字不对会得到 "Model Not Found"，那至少是清楚的错。
 
 ### 1.2 HTML 报告的图表从未在浏览器里打开过
 
@@ -153,6 +176,9 @@ judge 有自己的沙箱，与 SUT 的 workspace 是两回事，
 | **`SuiteDefaults.judge`** | 计划没有任何地方声明 judge 的模型/rubric/repeat |
 | **`--workdir`** | 测试走 CLI 时会把沙箱写进仓库根，每跑一次积一堆空目录 |
 | **judge 成本进报告面板** | 计划说"judge 可靠性面板"是验收项，但没说数据从哪来（现从索引读回） |
+| **`credentials.py` + `--model`/`--provider`** | 计划要跑真模型，但**没有任何地方读 key、也没有任何开关能选模型** —— 三段接线全缺，有 key 也跑不了 |
+| **`RunBuilder._preflight`** | 装配期错误必须在调度器之前抛，否则配置问题被记成"某条 case 失败"（退出码 1） |
+| **`.env.example`** | 给一个可提交的模板；`.env` 本身按红线由使用者自建 |
 
 ### 3.3 实现过程中修掉的真 bug
 

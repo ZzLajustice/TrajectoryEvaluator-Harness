@@ -79,12 +79,20 @@ def run(
     max_cost: float | None = typer.Option(
         None, "--max-cost",
         help="suite 级成本上限（美元）。超出后不再启动新 case。"),
+    model: str | None = typer.Option(
+        None, "--model", "-m", help="覆盖 suite 的模型名（如 deepseek-v4-flash）。"),
+    provider: str | None = typer.Option(
+        None, "--provider", help="覆盖 suite 的 provider（如 deepseek）。"),
 ) -> None:
     """运行一个 suite 并打印每条 run 的摘要。
 
     `--record` 与 `--replay` 互斥：录制要打真实模型，回放则完全离线。
     `--evaluate` 默认关闭：跑 agent 与评 agent 是两件事，
-    后续接入 LLM judge 后评测会产生额外成本，不该在不知情时发生。
+    接入 LLM judge 后评测会产生额外成本，不该在不知情时发生。
+
+    **真模型的 key 只从环境变量或 `.env` 读**（`DEEPSEEK_API_KEY` /
+    `HARNESS_API_KEY`），刻意没有 `--api-key` 参数 —— 命令行参数会进
+    shell history 和进程列表，那不是 key 该待的地方。
     """
     if record is not None and replay is not None:
         typer.echo("config error: --record and --replay are mutually exclusive", err=True)
@@ -95,7 +103,7 @@ def run(
                              workdir=workdir)
         outcomes = builder.run_suite_sync(
             suite, evaluate=evaluate, concurrency=concurrency, case_ids=case,
-            max_cost=max_cost,
+            max_cost=max_cost, model=model, provider=provider,
         )
     except _CONFIG_ERRORS as exc:
         typer.echo(f"config error: {exc}", err=True)

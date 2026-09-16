@@ -30,7 +30,7 @@ from typing import Any
 
 from harness.contracts.protocols import EvalContext, JudgeCase, LLMResponse
 from harness.contracts.results import EvalResult
-from harness.contracts.spec import RunRole, RunSpec, ToolPolicy
+from harness.contracts.spec import ModelRef, RunRole, RunSpec, ToolPolicy
 from harness.core.middleware.factory import build_middlewares
 from harness.core.registry import ToolRegistry
 from harness.core.run import Run, RunDeps, RunResult, default_run_id
@@ -45,6 +45,7 @@ from harness.orchestration.aggregator import (
     to_case_outcomes,
     write_snapshot,
 )
+from harness.orchestration.credentials import is_fake, resolve_endpoint
 from harness.orchestration.evalrunner import build_evaluators
 from harness.orchestration.judge import (
     JudgeConfig,
@@ -55,6 +56,7 @@ from harness.orchestration.judge import (
 from harness.orchestration.scheduler import Scheduler, Skipped
 from harness.orchestration.suite import CaseSpec, Suite, SuiteConfigError, load_suite
 from harness.providers.fake import FakeProvider, text_response, tool_call_response
+from harness.providers.openai_compat import OpenAICompatProvider
 from harness.providers.recording import RecordingProvider, ReplayProvider
 from harness.providers.response_pool import ResponsePool
 from harness.store.composite import CompositeStore
@@ -152,11 +154,41 @@ class RunBuilder:
         # 单条 case 的成本在 RunResult.usage 里。
         self._spent_usd = 0.0
 
+    # ---- 装配期校验 ----
+    def _preflight(self, suite: Suite) -> None:
+        """在任何 run 启动前，把"跑起来必然会炸"的配置问题全部抛出来。
+
+        每一条都在 `_run_case` 里有对应实现 —— 这里只是**提前**跑一遍。
+        重复解析一次凭据的代价可以忽略，换来的是"配置错误"永远是退出码 2。
+        """
+        if self.replay is not None and not self.replay.exists():
+            raise FileNotFoundError(f"replay cassette not found: {self.replay}")
+
+        if self.replay is None:
+            # 真 provider 的凭据：缺 key / 厂商未知都在这里暴露
+            if not is_fake(suite.defaults.model.provider):
+                resolve_endpoint(suite.defaults.model, role="sut")
+            judge = suite.judge_config()
+            if judge is not None and not is_fake(judge.provider):
+                resolve_endpoint(
+                    ModelRef(provider=judge.provider, model=judge.model), role="judge"
+                )
+
     # ---- provider ----
-    def _build_provider(self, script: list[dict[str, Any]]) -> Any:
-        """按 record/replay 模式包装 provider。
+    def _build_provider(self, model: ModelRef, script: list[dict[str, Any]],
+                        *, role: str = "sut") -> Any:
+        """按 `ModelRef.provider` 分派，再按 record/replay 模式包装。
 
         装饰器模式让录制与厂商**解耦** —— provider 实现不知道录制功能存在。
+
+        ## 真 provider 的凭据在这里解析，不在 suite 里
+
+        `ModelRef` 刻意**没有** api_key 字段：suite 文件是入库的。
+        凭据只能来自环境变量或 `.env`（见 `credentials.py` 的阶梯），
+        缺失时抛 `ProviderConfigError` → CLI 退出码 2。
+
+        在**装配阶段**就解析而不是等第一次调用：这样 key 没配是
+        "配置错误"，而不是跑了一半的 `llm_error`。
         """
         if self.replay is not None:
             # 提前校验而非留给运行期：缺失的 cassette 是**配置错误**，
@@ -167,7 +199,15 @@ class RunBuilder:
             # 回放命不中时默认抛错而非静默降级（静默降级会让结果无声地错掉）
             return ReplayProvider(ResponsePool(self.replay))
 
-        base = FakeProvider(build_fake_script(script))
+        base: Any
+        if is_fake(model.provider):
+            base = FakeProvider(build_fake_script(script))
+        else:
+            endpoint = resolve_endpoint(model, role=role)
+            base = OpenAICompatProvider(
+                api_key=endpoint.api_key, base_url=endpoint.base_url
+            )
+
         if self.record is not None:
             return RecordingProvider(base, ResponsePool(self.record))
         return base
@@ -181,10 +221,12 @@ class RunBuilder:
         concurrency: int | None = None,
         case_ids: list[str] | None = None,
         max_cost: float | None = None,
+        model: str | None = None,
+        provider: str | None = None,
     ) -> list[RunOutcome]:
         return asyncio.run(self.run_suite(
             suite_path, evaluate=evaluate, concurrency=concurrency,
-            case_ids=case_ids, max_cost=max_cost,
+            case_ids=case_ids, max_cost=max_cost, model=model, provider=provider,
         ))
 
     async def run_suite(
@@ -195,15 +237,32 @@ class RunBuilder:
         concurrency: int | None = None,
         case_ids: list[str] | None = None,
         max_cost: float | None = None,
+        model: str | None = None,
+        provider: str | None = None,
     ) -> list[RunOutcome]:
         suite = load_suite(suite_path)
+        # 命令行覆盖 suite 的 defaults —— 换模型不该逼人改 suite 文件
+        if model or provider:
+            suite.defaults.model = suite.defaults.model.model_copy(update={
+                **({"model": model} if model else {}),
+                **({"provider": provider} if provider else {}),
+            })
         cases = _select_cases(suite, case_ids)
 
-        # 缺失的 cassette 是**配置错误**，必须在任何 run 启动前抛错。
-        # 放到 `_build_provider` 里迟了一步：那时它在调度器内部，会被当成
-        # 某条 case 的执行失败（退出码 1），配置问题又一次伪装成了别的东西。
-        if self.replay is not None and not self.replay.exists():
-            raise FileNotFoundError(f"replay cassette not found: {self.replay}")
+        # ★ 装配期能失败的东西，一律在**调度器之前**校验。
+        #
+        # 为什么这条反复出现：调度器的职责是**隔离运行期故障**
+        # （网络抽风、沙箱炸了），它把异常记成"某条 case 失败"。
+        # 但配置错误被它接住之后，症状就变成了"1/1 case failed to execute"
+        # 配退出码 1（门禁未达标）—— 让该去改配置的人去查门禁。
+        #
+        # 已经栽过三次，每次都是同一个形状：
+        #   1. replay cassette 缺失（M6）
+        #   2. judge 的 case_id 含冒号（M9，还是在沙箱建立时炸的）
+        #   3. 真模型的 API key 没配（现在）
+        # 所以这里的规则是：**任何在 `_run_case` 里可能抛的装配错误，
+        # 都要在这里先抛一遍。**
+        self._preflight(suite)
 
         tools = build_tool_registry()
         store = CompositeStore(root=self.out_dir)
@@ -279,7 +338,7 @@ class RunBuilder:
         repeat_index: int,
     ) -> RunOutcome:
         spec = self._build_spec(case, suite)
-        provider = self._build_provider(suite.fake_script_for(case))
+        provider = self._build_provider(spec.model, suite.fake_script_for(case))
         deps = RunDeps(
             provider=provider,
             store=store,
@@ -340,7 +399,9 @@ class RunBuilder:
         if cfg is None:
             return None
 
-        judge_provider = self._build_provider(cfg.fake_script)
+        judge_provider = self._build_provider(
+            ModelRef(provider=cfg.provider, model=cfg.model),
+            cfg.fake_script, role="judge")
 
         def factory(spec: RunSpec, subject: Trajectory | None) -> Run:
             return Run(spec, RunDeps(

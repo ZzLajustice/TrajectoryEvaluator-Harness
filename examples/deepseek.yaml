@@ -1,0 +1,75 @@
+# 真模型 smoke suite —— 全项目第一个打真实 API 的用例集。
+#
+# 前置：
+#     cp .env.example .env      # 填入 DEEPSEEK_API_KEY
+#     uv run harness run -s examples/deepseek.yaml --evaluate
+#
+# ## 为什么这两条 case 先跑
+#
+# 它们是**分层的**，失败时能定位到不同环节：
+#
+#   smoke_text       纯文本往返 —— 最少的活动部件。
+#                    挂了说明 base_url / key / 模型名有问题。
+#   smoke_toolcall   一次工具调用 + finish —— 覆盖 tool_calls 的
+#                    解析与 TOOL_CALL/TOOL_RESULT 配对。
+#                    挂了说明 schema 映射有问题，而不是网络。
+#
+# 先跑通这两条，再碰 concurrency.yaml / traps.yaml（那些要跑十几步）。
+#
+# ## ⚠️ 模型名会过时
+#
+# `deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 弃用，
+# 对应非思考/思考模式的新名字是 `deepseek-v4-flash` / `deepseek-v4-pro`。
+# 我这边的信息来自公开文档的检索结果，**跑之前请对一下厂商当前文档** ——
+# 名字不对会得到 "Model Not Found"，那至少是个清楚的错。
+# 换名字不必改这个文件：`--model` 可以直接覆盖。
+name: deepseek
+version: "1"
+
+defaults:
+  # provider 名会决定找哪个 key：deepseek → DEEPSEEK_API_KEY
+  model: {provider: deepseek, model: deepseek-v4-flash}
+  budget:
+    max_turns: 6
+    # 真模型要花钱 —— 单条 case 的硬上限，跑飞了也会自己停
+    max_usd: 0.10
+    # wall_clock 是 BUDGET_EXCEEDED 的触发维度（max_turns 走的是 MAX_TURNS）
+    max_wall_clock_s: 120.0
+  system_prompt: "You are a careful coding agent. Use the tools to fix the problem."
+  middlewares: [permission, sandbox, budget, telemetry]
+  concurrency: 2
+
+cases:
+  # ---- 第一层：纯文本往返（无工具）----
+  - case_id: smoke_text
+    tier: easy
+    task:
+      case_id: smoke_text
+      prompt: "Reply with exactly the word: pong"
+    workspace: {kind: tempdir}
+    graders:
+      - name: EfficiencyAnalyzer
+        config: {optimal_steps: 1}
+
+  # ---- 第二层：一次工具调用 ----
+  # 让它先写一个文件再读回来：这样 `run_command` 不参与，
+  # 失败时能确定问题出在 tool_calls 的解析而不是沙箱。
+  - case_id: smoke_toolcall
+    tier: easy
+    task:
+      case_id: smoke_toolcall
+      prompt: |
+        Create a file named pong.txt containing exactly the text: pong
+        Then read it back to confirm, and finish.
+    workspace: {kind: tempdir}
+    graders:
+      - name: TrajectoryMatcher
+        config:
+          # in_order + 忽略参数：真实模型可能先 list_dir 探路，
+          # 用 strict 会因为一次合理的探索就判 fail
+          mode: in_order
+          expected: [[write_file, {}], [read_file, {}], [finish, {}]]
+          tool_args_match_mode: ignore
+      - name: EfficiencyAnalyzer
+        config: {optimal_steps: 3}
+      - name: GroundingChecker
