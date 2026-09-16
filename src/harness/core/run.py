@@ -272,45 +272,57 @@ class Run:
         started = self.deps.clock()
         ctx = RunContext(self.run_id, self.spec, self.deps)
 
-        # 工作目录：没有它，文件工具全部失败、沙箱检查静默放行
-        workspace = await self._open_workspace(ctx)
-
-        ctx.emit(RunStartEvent(
-            run_id=self.run_id, seq=ctx.next_seq(), type=EventType.RUN_START,
-            role=self.spec.role.value,
-            task=self.spec.task.prompt if self.spec.task else None,
-            model=self.spec.model.model,
-            provider=self.spec.model.provider,
-            tools=ctx.tool_names,
-            spec_json=self.spec.model_dump_json(),
-        ))
-
-        # 先给 status 一个默认值：`CancelledError` 是 BaseException，
-        # 不会被下面的 `except Exception` 捕获，此时 finally 里的引用会 NameError。
-        status: RunStatus = RunStatus.CANCELLED
-        error: str | None = None
+        # ★ 从 `RunContext` 建好那一刻起就必须有 finally 兜住 sink。
+        # `RunContext.__init__` 会起一个后台 drain 任务，而 `_open_workspace`
+        # 完全可能抛（非法路径、沙箱建不起来）。原先它不在任何 try 里，
+        # 于是异常路径下 drain 任务永远悬着 —— 症状是进程退出时打一行
+        # "Task was destroyed but it is pending!"，轨迹文件也一个字节都没写。
+        # （实测踩出来的：judge 的 case_id 带冒号，Windows 上直接 NotADirectoryError。）
         try:
-            status = await agent_loop(ctx)
-        except Exception as exc:  # noqa: BLE001
-            status, error = RunStatus.SANDBOX_ERROR, f"{type(exc).__name__}: {exc}"
+            # 工作目录：没有它，文件工具全部失败、沙箱检查静默放行
+            workspace = await self._open_workspace(ctx)
+
+            ctx.emit(RunStartEvent(
+                run_id=self.run_id, seq=ctx.next_seq(), type=EventType.RUN_START,
+                role=self.spec.role.value,
+                task=self.spec.task.prompt if self.spec.task else None,
+                model=self.spec.model.model,
+                provider=self.spec.model.provider,
+                tools=ctx.tool_names,
+                spec_json=self.spec.model_dump_json(),
+            ))
+
+            # 先给 status 一个默认值：`CancelledError` 是 BaseException，
+            # 不会被下面的 `except Exception` 捕获，此时 finally 里的引用会 NameError。
+            status: RunStatus = RunStatus.CANCELLED
+            error: str | None = None
+            try:
+                status = await agent_loop(ctx)
+            except Exception as exc:  # noqa: BLE001
+                status, error = RunStatus.SANDBOX_ERROR, f"{type(exc).__name__}: {exc}"
+            finally:
+                if workspace is not None:
+                    # 失败时保留现场供调试（keep_on_failure）
+                    await workspace.teardown(failed=(status is not RunStatus.OK))
+
+            duration = self.deps.clock() - started
+            # RUN_END 必须在 sink 关闭**之前**发 —— 放到外面就没人接它了，
+            # 而轨迹缺尾部事件的症状是"评测器看到悬空配对"，极难反查。
+            ctx.emit(RunEndEvent(
+                run_id=self.run_id, seq=ctx.next_seq(), type=EventType.RUN_END,
+                status=status.value, final_output=ctx.final_output,
+                turns=ctx.turns_executed,
+                tool_calls=ctx.tool_calls_count,
+                input_tokens=ctx.governor.usage().input_tokens,
+                output_tokens=ctx.governor.usage().output_tokens,
+                cost_usd=ctx.governor.usage().cost_usd,
+                duration_s=duration,
+            ))
         finally:
-            if workspace is not None:
-                # 失败时保留现场供调试（keep_on_failure）
-                await workspace.teardown(failed=(status is not RunStatus.OK))
+            # 等队列排空 —— 漏掉它会让轨迹静默丢尾部事件
+            await ctx.sink.aclose()
 
-        duration = self.deps.clock() - started
-        ctx.emit(RunEndEvent(
-            run_id=self.run_id, seq=ctx.next_seq(), type=EventType.RUN_END,
-            status=status.value, final_output=ctx.final_output,
-            turns=ctx.turns_executed,
-            tool_calls=ctx.tool_calls_count,
-            input_tokens=ctx.governor.usage().input_tokens,
-            output_tokens=ctx.governor.usage().output_tokens,
-            cost_usd=ctx.governor.usage().cost_usd,
-            duration_s=duration,
-        ))
-        await ctx.sink.aclose()
-
+        # aclose 之后轨迹才完整，这时读回来才是全的
         trajectory = await self.deps.store.get(self.run_id)
         end = trajectory.end()
         return RunResult(

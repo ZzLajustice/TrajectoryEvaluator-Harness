@@ -58,6 +58,13 @@ class SuiteConfigError(ValueError):
     """suite 文件格式或内容错误 —— 映射到 CLI 退出码 2。"""
 
 
+# case_id 会成为工作目录名（workdir/<case_id>/<run_id>），
+# 这些字符在 Windows 上是非法的。**必须在加载期拦**：
+# 留给运行期的话，症状是沙箱建立时抛 NotADirectoryError，
+# 看起来像"环境有问题"而不是"配置写错了"。
+_ILLEGAL_IN_PATH = frozenset('<>:"/\\|?*')
+
+
 class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -77,6 +84,26 @@ class GoldenSpec(_Model):
 
     alternatives: list[list[dict[str, Any]]] = Field(default_factory=list)
     generated_by: dict[str, Any] = Field(default_factory=dict)
+
+
+class JudgeSpec(_Model):
+    """judge 的 suite 侧配置。
+
+    与 `JudgeConfig`（orchestration/judge.py）分开：这里是**YAML 数据形状**，
+    那里是**运行期配置**。分开的好处是 suite 的字段增删不会牵动 judge 实现，
+    而 `fake_script` 这类纯测试用的键不该出现在运行期配置里。
+    """
+
+    model: str = "fake"
+    provider: str = "fake"
+    rubric: str = "Judge whether the task was completed correctly and verified."
+    # 判几次。1 次无法谈一致性（MetaEvaluator 会报"不适用"而非完美）
+    repeat: int = 1
+    injection_probe: bool = False
+    max_usd: float = 0.5
+    max_turns: int = 8
+    # 仅 fake provider 下使用；真实模型下被忽略
+    fake_script: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SUTOverride(_Model):
@@ -109,6 +136,13 @@ class CaseSpec(_Model):
     def _check(self) -> CaseSpec:
         if self.repeat < 1:
             raise SuiteConfigError(f"case {self.case_id!r}: repeat must be >= 1")
+        bad = sorted(set(self.case_id) & _ILLEGAL_IN_PATH)
+        if bad:
+            raise SuiteConfigError(
+                f"case_id {self.case_id!r} contains characters that are illegal "
+                f"in a path on Windows: {bad}. case_id becomes a directory name "
+                f"(workdir/<case_id>/<run_id>)."
+            )
         # 两处都写 case_id，不一致会让轨迹里的 id 和报告里的对不上
         if self.task.case_id != self.case_id:
             raise SuiteConfigError(
@@ -133,6 +167,8 @@ class SuiteDefaults(_Model):
         "You are a careful coding agent. Use the tools to fix the problem."
     )
     fake_script: list[dict[str, Any]] = Field(default_factory=list)
+    # 没有 judge 块 = 不启用 judge。评测器里的 LLM 兜底会走"没注入 judge"分支。
+    judge: JudgeSpec | None = None
 
     @model_validator(mode="after")
     def _check_middlewares(self) -> SuiteDefaults:
@@ -167,6 +203,9 @@ class Suite(_Model):
         return self
 
     # ---- 逐 case 解析 ----
+    def judge_config(self) -> JudgeSpec | None:
+        return self.defaults.judge
+
     def middlewares_for(self, case: CaseSpec) -> list[MiddlewareSpec]:
         """按**规范顺序**返回 —— 书写顺序不代表管道顺序，两处不一致会误导读者。"""
         names = case.middlewares if case.middlewares is not None else self.defaults.middlewares

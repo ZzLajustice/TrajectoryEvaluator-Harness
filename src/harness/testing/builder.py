@@ -90,11 +90,19 @@ class TrajectoryBuilder:
         text: str = "",
         tool_calls: list[tuple] | None = None,
         finish_reason: str | None = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cost_usd: float | None = None,
     ) -> TrajectoryBuilder:
         """记录一次模型响应。
 
         `tool_calls` 元素形态：`(name, arguments)` 或 `(name, arguments, call_id)`。
         省略 call_id 时自动生成，并登记为待配对。
+
+        用量参数是必要的：`MetaEvaluator` 要从 judge 轨迹里读出它自己的成本，
+        而成本是**一等指标**（judge_cost 与 sut 的 cost 严格分列）。
+        不支持它们的话，那条路径只能靠 `of()` 手搓事件来测 —— 而手搓的
+        事件形状与生产不一致，测了等于没测。
         """
         calls: list[ToolCall] = []
         for spec in tool_calls or []:
@@ -121,6 +129,9 @@ class TrajectoryBuilder:
             tool_calls=[{"call_id": c.call_id, "name": c.name, "arguments": c.arguments}
                         for c in calls],
             finish_reason=finish_reason or ("tool_calls" if calls else "stop"),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost_usd,
             latency_ms=0,
         ))
         # 为每个调用单独发 TOOL_CALL —— 真实 loop 就是这么做的，
