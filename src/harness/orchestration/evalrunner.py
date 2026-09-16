@@ -19,6 +19,7 @@ from typing import Any
 from harness.evaluators.efficiency import EfficiencyAnalyzer
 from harness.evaluators.failure_classify import FailureClassifier
 from harness.evaluators.grounding import GroundingChecker
+from harness.evaluators.meta import MetaEvaluator
 from harness.evaluators.trajectory_match import TrajectoryMatcher
 
 # 允许在 suite 里引用的评测器。
@@ -29,6 +30,7 @@ EVALUATOR_REGISTRY: dict[str, type] = {
     "EfficiencyAnalyzer": EfficiencyAnalyzer,
     "FailureClassifier": FailureClassifier,
     "GroundingChecker": GroundingChecker,
+    "MetaEvaluator": MetaEvaluator,
 }
 
 

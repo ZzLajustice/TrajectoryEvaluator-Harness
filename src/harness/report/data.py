@@ -50,8 +50,9 @@ def collect(runs_dir: Path | str, *, snapshot: Path | str | None = None) -> dict
              "pass_rate": c.get("pass_rate") or 0.0}
             for c in cases
         ],
-        # judge 可靠性属 M10；没有真数据时留 None，报告不摆空壳
-        "judge": snap.get("judge"),
+        # judge 可靠性来自 MetaEvaluator 的结果（索引里读回）。
+        # 没启用 judge 时是 None，报告不摆空壳 —— 见 _judge_panel。
+        "judge": _judge_panel(runs_dir),
     }
 
 
@@ -78,6 +79,53 @@ def _failure_modes(runs_dir: Path) -> dict[str, int]:
         return counter
 
     return dict(asyncio.run(read()))
+
+
+def _judge_panel(runs_dir: Path) -> dict[str, Any] | None:
+    """Judge 可靠性面板 —— 从索引里 MetaEvaluator 的结果汇总。
+
+    **没有 judge 时返回 None**，报告就不渲染这一节。
+    摆一个全 0 的空面板比不摆更糟：0 分看起来像"judge 很差"，
+    而实际是"这次没启用 judge"。
+    """
+    if not (runs_dir / INDEX_NAME).exists():
+        return None
+
+    async def read() -> list[Any]:
+        store = CompositeStore(root=runs_dir)
+        out: list[Any] = []
+        try:
+            for row in await store.query_runs():
+                for ev in await store.get_evals(row["run_id"]):
+                    if ev.evaluator == "MetaEvaluator":
+                        out.append(ev)
+        finally:
+            await store.close()
+        return out
+
+    results = asyncio.run(read())
+    if not results:
+        return None
+
+    def _mean(key: str) -> float | None:
+        # 缺席 = 不适用（只判一次时算不出一致性）。混进均值会凭空拉低它。
+        values = [ev.metrics[key] for ev in results if key in ev.metrics]
+        return round(sum(values) / len(values), 4) if values else None
+
+    panel: dict[str, Any] = {
+        # 数的是**元评测结果**条数，不是 judge run 条数 —— 一次元评测
+        # 通常汇总了 N 条 judge run（N = judge_repeat）。
+        # 键名说准：叫 judge_runs 会让人把它当成"判了几次"。
+        "meta_evaluations": float(len(results)),
+        "judge_cost_usd": round(sum(ev.metrics.get("judge_cost_usd", 0.0)
+                                    for ev in results), 6),
+        "judge_tokens": sum(ev.metrics.get("judge_tokens", 0.0) for ev in results),
+    }
+    for key in ("judge_consistency", "injection_resistance"):
+        value = _mean(key)
+        if value is not None:
+            panel[key] = value
+    return panel
 
 
 def top_failure_modes(modes: dict[str, int], limit: int = _TOP_MODES) -> dict[str, int]:

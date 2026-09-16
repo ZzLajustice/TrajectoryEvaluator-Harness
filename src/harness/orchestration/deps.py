@@ -28,7 +28,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from harness.contracts.protocols import EvalContext, LLMResponse
+from harness.contracts.protocols import EvalContext, JudgeCase, LLMResponse
 from harness.contracts.results import EvalResult
 from harness.contracts.spec import RunRole, RunSpec, ToolPolicy
 from harness.core.middleware.factory import build_middlewares
@@ -39,12 +39,19 @@ from harness.core.tools.fs import ListDirTool, ReadFileTool, WriteFileTool
 from harness.core.tools.search import SearchTool
 from harness.core.tools.shell import RunCommandTool
 from harness.evaluators.base import run_evaluators
+from harness.events.trajectory import Trajectory
 from harness.orchestration.aggregator import (
     aggregate,
     to_case_outcomes,
     write_snapshot,
 )
 from harness.orchestration.evalrunner import build_evaluators
+from harness.orchestration.judge import (
+    JudgeConfig,
+    RunBasedJudgeClient,
+    build_judge_tools,
+    meta_trajectory,
+)
 from harness.orchestration.scheduler import Scheduler, Skipped
 from harness.orchestration.suite import CaseSpec, Suite, SuiteConfigError, load_suite
 from harness.providers.fake import FakeProvider, text_response, tool_call_response
@@ -289,10 +296,24 @@ class RunBuilder:
                 # 评测器在轨迹落盘之后跑 —— 它只读轨迹，与 agent 零耦合。
                 # 只读是「评测器绝不 import core」这条架构约束的运行时体现：
                 # 若哪天评测器想直接驱动 agent，这里就拿不到任何句柄。
+                #
+                # ★ `MetaEvaluator` 必须**排除在常规这一轮之外** ——
+                # 它的评测对象是 judge，不是 SUT。留在里面的话它会跑两次：
+                # 一次拿 SUT 轨迹（找不到任何判定 → 0 verdict 却报 PASS，
+                # 一个看起来正常但毫无意义的结果），一次拿 judge 轨迹。
+                # 实测踩过：`evals[0]` 恰好是那个没意义的，指标全是 0。
+                normal = [g for g in case.graders if g.name != "MetaEvaluator"]
                 graders = build_evaluators(
-                    [{"name": g.name, "config": g.config} for g in case.graders]
+                    [{"name": g.name, "config": g.config} for g in normal]
                 )
-                evals = await run_evaluators(graders, result.trajectory, EvalContext())
+                # **每个 case 一个 judge client**：它的 `judge_results` 是这次
+                # case 的 judge 轨迹。共用一个的话，并发跑 8 条时各 case 的
+                # judge run 会混在一起，元评测就会拿 A 的判定去算 B 的一致性。
+                judge_client = self._build_judge_client(suite, store)
+                ctx = EvalContext(judge=judge_client)
+                evals = await run_evaluators(graders, result.trajectory, ctx)
+                # 元评测跑在 **judge 自己的轨迹** 上 —— 这是双 Harness 对称的兑现点
+                evals.extend(await self._meta_evals(case, judge_client, result))
                 # 落索引 —— M8 的聚合报告从这里读回，不用重跑评测
                 await store.put_evals(result.run_id, evals)
         finally:
@@ -303,6 +324,93 @@ class RunBuilder:
         self._spent_usd += result.usage.cost_usd
         return RunOutcome(result=result, evals=evals,
                           case_id=case.case_id, repeat_index=repeat_index)
+
+    # ---- judge ----
+    def _build_judge_client(
+        self, suite: Suite, store: CompositeStore
+    ) -> RunBasedJudgeClient | None:
+        """按 suite 的 `judge:` 块装配 judge。没配就返回 None。
+
+        **judge 复用同一个 `Run` 类** —— 这正是"双 Harness 对称"的落点：
+        差异只有 RunSpec 的取值（role / prompt / 工具白名单 / 预算）。
+        这里不做任何 `JudgeRun` 之类的特化，那些特化会让"judge 判得准不准"
+        变成无法回答的问题。
+        """
+        cfg = suite.judge_config()
+        if cfg is None:
+            return None
+
+        judge_provider = self._build_provider(cfg.fake_script)
+
+        def factory(spec: RunSpec, subject: Trajectory | None) -> Run:
+            return Run(spec, RunDeps(
+                provider=judge_provider,
+                # judge 的轨迹也进同一个 store：它要能被 trace、被元评测读回。
+                # run_id 不同，不会与 sut 的轨迹混。
+                store=store,
+                tools=build_judge_tools(subject),
+                middlewares=build_middlewares(spec.middlewares),
+                workdir=self.workdir,
+                id_gen=default_run_id,
+            ))
+
+        return RunBasedJudgeClient(factory, JudgeConfig(
+            model=cfg.model, provider=cfg.provider, rubric=cfg.rubric,
+            max_usd=cfg.max_usd, max_turns=cfg.max_turns,
+        ))
+
+    async def _meta_evals(
+        self,
+        case: CaseSpec,
+        client: RunBasedJudgeClient | None,
+        result: RunResult,
+    ) -> list[EvalResult]:
+        """触发 judge、然后在 **judge 自己的轨迹**上跑元评测。
+
+        ## 谁触发 judge —— 计划里没写，这里定下来
+
+        评测器只读轨迹、绝不起 agent run（那是「评测器不依赖 core」这条
+        架构约束的实质）。所以**触发 judge 是组装层的事**：
+        这里显式地判 N 次，再让 `MetaEvaluator` 去读那些轨迹。
+
+        反过来做（让 MetaEvaluator 自己调 `ctx.judge`）会把
+        "评测器触发 agent run" 这条反向依赖重新引进来，
+        而那正是整个分层要避免的。
+
+        ## 只对**声明需要**的 case 触发
+
+        judge 是要花钱的。没在 `graders` 里写 `MetaEvaluator` 就不判 ——
+        "配了 judge 就跑"会让没要它的用例也付钱。
+        """
+        wants = [g for g in case.graders if g.name == "MetaEvaluator"]
+        if client is None or not wants:
+            return []
+
+        cfg = wants[0].config or {}
+        repeat = int(cfg.get("judge_repeat", 1))
+
+        # 只取**这一轮元评测自己产生**的 judge run：FailureClassifier 的
+        # LLM 兜底可能已经往里塞过若干条，混进来会把两批判定的重复次数
+        # 搅在一起，一致性就算错了。
+        start = len(client.judge_results)
+        await client.judge(
+            JudgeCase(
+                case_id=case.case_id,
+                task=case.task.prompt,
+                traj=result.trajectory,
+                rubric=str(cfg.get("rubric", "")),
+            ),
+            repeat=repeat,
+        )
+        judge_runs = client.judge_results[start:]
+        if not judge_runs:
+            return []
+
+        meta_traj = meta_trajectory(judge_runs, run_id=f"{case.case_id}-meta")
+        graders = build_evaluators([{"name": "MetaEvaluator", "config": cfg}])
+        # 元评测读的是 judge 轨迹，**不再注入 judge** —— 注入的话
+        # "评测评判官的判官"这个递归就打开了，而 MAX_DEPTH=1 明确禁止。
+        return await run_evaluators(graders, meta_traj, EvalContext())
 
     def _build_spec(self, case: CaseSpec, suite: Suite) -> RunSpec:
         return RunSpec(
