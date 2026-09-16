@@ -6,16 +6,20 @@
 
 ## 当前状态（重要）
 
-**M0–M8 已完成**（任务 1–34 / 共 36）。765 条测试全绿。
+**M0–M9 已完成**（任务 1–35 / 共 36）。856 条测试全绿。
 
-已完成的能力：事件模型与只读 `Trajectory`、`RunSpec`/`Run` 双 harness 骨架、6 个 SUT 工具、Windows 进程树执行器、5 个中间件（telemetry 最外层）、budget governor、真 provider + record/replay、suite 加载器 + 并发调度器 + SQLite 索引、4 个评测器（`TrajectoryMatcher` / `EfficiencyAnalyzer` / `FailureClassifier` / `GroundingChecker`）、**聚合与快照 + 终端/HTML 报告 + baseline diff + CI 门禁**。
+已完成的能力：事件模型与只读 `Trajectory`、`RunSpec`/`Run` 双 harness 骨架、6 个 SUT 工具、Windows 进程树执行器、5 个中间件、budget governor、真 provider + record/replay、suite 加载器 + 并发调度器 + SQLite 索引、5 个评测器（`TrajectoryMatcher` / `EfficiencyAnalyzer` / `FailureClassifier` / `GroundingChecker` / `MetaEvaluator`）、聚合与快照 + 终端/HTML 报告 + baseline diff + CI 门禁、**judge 自省工具 + `RunBasedJudgeClient` + 元评测**。
 
 五个 CLI 命令：`run` / `trace` / `report` / `diff` / `ci`。
 退出码契约：`0` 通过 · `1` 门禁未达标 · `2` 配置错误 · `3` 预算超限 · `4` 基线缺失。
 
-**尚未实现**（后续里程碑）：judge 工具与 `JudgeClient`（M9）、`MetaEvaluator`（M10）、adapters/用例集/README（M11）。`tests/test_architecture.py` 属 M11，目前**还不存在** —— 架构约束暂时只由 `uv run lint-imports` 守着。
+**尚未实现**（M11 任务 36）：adapters、`events/otel.py`、`tests/test_architecture.py`、17 条用例集、README。
 
-下一步是 [Part 3 计划](docs/superpowers/plans/) 的 M9（任务 35，双 Harness 对称 + 元评测）。
+### ⚠️ 看 [docs/known-gaps.md](docs/known-gaps.md)
+
+那份文档记录**没验证的事、遗留问题、与计划不同之处**。
+最重要的两条：**真模型路径从未跑过**（全部测试都在 FakeProvider 上）、
+**HTML 报告的图表从未在浏览器里打开过**。`docs/known-gaps.md` 是每次里程碑完成时更新的。
 
 ## 文档地图
 
