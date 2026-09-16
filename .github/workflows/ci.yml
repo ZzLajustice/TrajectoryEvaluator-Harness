@@ -1,0 +1,93 @@
+# CI 门禁：四个门 + 一份自包含的 HTML 报告作为 artifact。
+#
+# ## 为什么只跑 windows-latest
+#
+# 本项目的**全部开发与验证都发生在 Windows 上**，而且几条硬约束是
+# Windows 特有的（见 .claude/CLAUDE.md 与 docs/known-gaps.md）：
+#
+#   - `asyncio.create_subprocess_exec` 只支持 ProactorEventLoop
+#   - 超时杀进程树必须走 `taskkill /F /T`，否则留下孤儿进程并导致 WinError 32
+#   - `case_id` 会成为目录名，因此不能含 `<>:"/\|?*`
+#
+# 挂一个 ubuntu job 等于**声称**这份代码在 Linux 上也能跑 ——
+# 而没有人跑过。首推就红的 CI 比没有 CI 更糟。要加 Linux 覆盖，
+# 先在本地或临时分支跑通 `pytest` 再往这里加一行，不要凭猜测写。
+#
+# ## 为什么报告步骤跑 traps 而不是 codefix
+#
+# `suites/codefix` 的默认 provider 是 `fake`，而它的用例**没有 fake_script**
+# （真跑要用 `--model/--provider` 指向真模型）。在 CI 里跑它会得到一批
+# `llm_error`，报告就成了噪声。
+#
+# `examples/traps.yaml` 是**脚本化的**：9 条 case 各自确定性地制造一个失败模式，
+# 所以报告里的失败模式分布、grounding 检出、轨迹匹配分都有真实内容，
+# 而且零网络、零成本、每次跑结果完全一样。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # 手动触发，方便在没推送的分支上跑一遍
+  workflow_dispatch:
+
+# 同一分支的新推送取消上一次未完成的运行
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 报告步骤需要确定性输出
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  gates:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # `--all-groups` 而不是 `--dev`：本项目把工具链拆成了几个依赖组
+      - name: 建环境（Python 3.12，锁定在 uv.lock）
+        run: uv sync --all-groups
+
+      # ---- 四个门。顺序按"越便宜越先跑"：风格 → 类型 → 架构 → 测试 ----
+
+      - name: 风格（ruff）
+        run: uv run ruff check .
+
+      - name: 类型（pyright）
+        run: uv run pyright
+
+      - name: 架构约束（import-linter）
+        run: uv run lint-imports
+
+      # `-m 'not live'` 由 pyproject 的 addopts 保证；真模型测试默认跳过。
+      # 这一步同时覆盖 tests/suites/test_cases_are_solvable.py ——
+      # 它会把 17 条用例各跑一遍（注入 bug 必须失败、打上参考修复必须通过）。
+      - name: 测试（离线，零 LLM 调用）
+        run: uv run pytest
+
+      # ---- 报告：跑一套脚本化的用例，产出单文件 HTML ----
+
+      - name: 跑 traps suite 并生成报告
+        run: |
+          uv run harness run -s examples/traps.yaml --evaluate --concurrency 4 `
+            --out runs --workdir workdir
+          uv run harness report --runs runs --format html --out report.html
+
+      - name: 上传报告
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: report.html
+          # 报告是构建产物，不是源码
+          retention-days: 14
+          if-no-files-found: error

@@ -61,14 +61,16 @@ judge = `deepseek-v4-pro`，判 2 次。结果 `judged_real → ok`，
 | 并行工具调用 | 模型三次都只发一个 `tool_call`，没触发并行分支 |
 | **judge 的判定准不准** | 这次两个判定都说 pass，而 SUT 确实做对了 —— 但这是**一轮**。要谈准确率需要带 ground-truth 标签的用例集（M11） |
 | **judge 模型的 CLI 覆盖** | `--model/--provider` 只覆盖 SUT；judge 的模型只能在 suite 里改 |
-| **成本** | 见 §2.5 —— `cost_usd` 恒为 0，**成本门禁是失效的** |
+| **成本** | ~~见 §2.5~~ —— 已补厂商价格表，`cost_usd` 不再恒为 0，成本门禁生效 |
 
 **影响**：M3 的验收判据"真模型自动修掉 toyrepo 的 bug"仍**未**达成 ——
 它需要 toyrepo 用例集（M11），而 `smoke_toolcall` 只是写读一个文件。
 但"真模型能不能跑"这件事本身，现在是**有证据的**了。
 
 **⚠️ 模型名**：`deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 弃用。
-实跑用的是 `deepseek-v4-flash`，厂商接受了这个名字。
+实跑用的是 `deepseek-flash`（**现行名**；`deepseek-v4-flash` 是旧名，
+仍可调用但模型已下线，由 V4.1-Flash 按 Flash 价服务 —— 两个名字都留在价格表里）。
+本仓库里的 suite 已统一改用现行名。
 
 ### 1.2 HTML 报告的图表从未在浏览器里打开过
 
@@ -106,7 +108,31 @@ M7 的验收数字是 **8/8 = 100%**，但那是**构造失败的上界**：
 真实模型下每条 run 耗时从毫秒变成几十秒，并发窗口完全不同 ——
 现在暴露不出来的竞态那时才可能出现。
 
-### 1.6 其它未验证项
+### 1.6 M11 的用例集与结果级评测：**从未在真模型上跑过** ⚠️
+
+这是 M11 新增的、也是目前**最大**的一块未验证：
+
+| 声称 | 证据强度 |
+|---|---|
+| 17 条用例**可解**（bug 抓得到、参考修复能过） | **强** —— 生成时逐条双向验证 + CI 里对已提交产物再验一遍 |
+| `OutcomeGrader` 能判对错 | **中** —— 10 条 e2e 用例，但 SUT 是 `FakeProvider` |
+| 真模型能在这些用例上跑出有意义的过程 | **无** —— 一次都没跑过 |
+| 12 个失败模式在真实失败上命中率如何 | **无**（沿用 §1.3 的缺口） |
+| 4 条陷阱用例真的能诱导出对应失败模式吗 | **无** —— 陷阱的**机制**是设计出来的，但"真模型会不会上钩"没有数据 |
+
+**为什么这个缺口重要**：用例集的难度分层（easy/medium/hard）、
+`optimal_steps` 的估计、成本预算（`--max-cost 2.0` 是否合理）全都是**先验猜的**。
+真跑一遍之前，"17 条用例能支撑统计意义"只是设计意图，不是观测结果。
+
+**怎么补**（成本可控，这正是用例集设计成"一次全量 run 5 分钟内"的原因）：
+
+```bash
+uv run harness run -s suites/codefix --evaluate -m deepseek-flash \
+    --provider deepseek --concurrency 4 --max-cost 2.0
+uv run harness report --format html --out report.html    # ← 顺便补 §1.2
+```
+
+### 1.7 其它未验证项
 
 - **Windows 进程树杀死**：单测覆盖（含孙进程），但从未在真实模型触发的
   长命令上验证
@@ -149,27 +175,42 @@ judge 有自己的沙箱，与 SUT 的 workspace 是两回事，
 `runs/latest.json` 每次 run 都覆盖。做 baseline 对比需要**手动复制**。
 `harness diff` 因此只能比"当前 vs 手动存的基线"。
 
-### 2.5 成本门禁**失效**（真模型下）⚠️ 实跑发现
+### 2.5 成本门禁 —— ✅ 已修复（曾经失效）
 
-`Usage.cost_usd` 对真实模型**恒为 0** —— 没有厂商价格表，provider 只搬 token 数。
+**曾经**：`Usage.cost_usd` 对真实模型恒为 0 —— 没有厂商价格表，provider 只搬 token 数。
+后果是 `--max-cost` 与 `Budget.max_usd` 都不会触发，而它们看起来像在保护你。
+**一个静默失效的安全机制比没有更糟。**
 
-后果是 `--max-cost` 与 `Budget.max_usd` **都不会触发**。
-而它们看起来像在保护你：`max_usd: 0.10` 写在 suite 里，
-读的人会以为单条 case 最多花一毛钱。**一个静默失效的安全机制比没有更糟。**
+**现在**：`contracts/pricing.py` 从 DeepSeek 官方定价页抓了价格表
+（`PRICES_FETCHED_ON = "2026-09-16"`），`core/loop.py` 在每轮调用的同一处
+算一次成本、事件与计费共用。成本门禁生效。
 
-**已做的补救**：设了 `--max-cost` 而实际花了 token 却报 0 成本时，
-`RunBuilder` 会发一条 `RuntimeWarning` 明说"这个上限没能生效"。
-把静默的洞变成吵闹的洞。
+价格**可配置**而非硬编码（这是当初说好的形态，只是换了承载方式）：
 
-**没做的**：真正的价格表。**我不打算凭记忆写厂商价格** ——
-价格会变，写错的价格比 0 更危险（它会给出一个看起来合理的错误数字）。
-建议的实现是**可配置**的价目表（suite 或环境变量），而不是硬编码：
+| 变量 | 作用 |
+|---|---|
+| `HARNESS_PRICE_<MODEL>` | `"输入,输出[,缓存命中]"`，人民币/百万 tokens，覆盖单个模型 |
+| `HARNESS_USD_PER_CNY` | 汇率。**这是近似值**，见下 |
 
-```yaml
-# 设想形态
-pricing:
-  deepseek-v4-flash: {input_per_1m: 0.28, output_per_1m: 0.42}
-```
+**仍然是近似的地方（三点，都不影响门禁的可用性）**：
+
+1. **汇率是固定的**（`DEFAULT_USD_PER_CNY = 0.141`）。厂商按人民币计价，
+   而 `cost_usd` 字段名是美元。汇率会动，用途是让量级正确，不是财务对账。
+2. **高峰时段价差一倍**（北京 9-12、14-18 为 2×）。按"跑的时刻"判定，
+   所以同一 suite 在午休跑和在上午跑，成本数字不同 —— 这是**忠实**的，
+   但对比两次 run 的成本时要留意时刻。
+3. **缓存命中价需要 provider 报 `prompt_cache_hit_tokens`**。
+   实测 DeepSeek 的自动上下文缓存命中率约 70%（730 个 input 里命中 512），
+   不建模缓存会把成本高估 2 倍。已接（`providers/base.py` 读这个字段）。
+
+**查不到价格的模型会发警告并记 0** —— 不静默。假 provider 不警告
+（它本来就没花钱，误报的警告会被学会忽略）。
+
+**一个值得记住的坑**：`run.end.cost_usd` 是**累计值**，不是增量。
+"遍历所有事件求成本"会正好翻倍，而翻倍的数字看起来仍然合理。
+`Trajectory.cost_usd` 只累加 `llm.response`；回归测试见
+`tests/events/test_trajectory.py::test_cost_usd_sums_responses_and_ignores_the_run_end_total`。
+（我自己的核对脚本就是这么错的，还把结论当成了 harness 的 bug。）
 
 ### 2.6 模型的推理内容没有被任何评测器使用
 
@@ -218,6 +259,10 @@ pricing:
 | 10 | `MetaEvaluator.evaluate` 被 `await` | **sync** | 它只读轨迹、不调 LLM，没有理由 async |
 | 11 | 测试用 `@pytest.mark.anyio` | pytest-asyncio auto 模式 | 项目明确不引入 anyio（tech-stack §4.1） |
 | 12 | judge 的 `case_id = "judge:<ref>"` | `"judge-<ref>"` | 冒号在 Windows 路径非法 → `NotADirectoryError` |
+| 13 | OTel 映射只有 `invoke_agent` + `execute_tool` 两行 | 多认一个 `chat` | 真实 OTel 轨迹里 token 与成本挂在独立的 `chat` span 上。只映射两行会让导入的轨迹**全是 0 token** —— 而 0 看起来像"这次很省" |
+| 14 | 用例的目录形状是"概念上分组" | 加载器**真的支持**目录形状（`suite.yaml` + `cases/*/case.yaml`） | 补丁与隐藏测试必须是**真实文件**（要被 `git apply` 应用、被 pytest 收集），塞进 YAML 就成了不可读的字符串团 |
+| 15 | 未提 | `WorkspaceSpec.overlay`：用例私有场景文件在 `source` 之后、`patch` 之前覆写进工作目录 | 陷阱用例需要"环境里多了一个文件"。放进 `bug.patch` 也能让 SUT 看见，但那样 `fix.patch`（反向补丁）会顺手把题目删掉 |
+| 16 | `ruff check .` 覆盖全仓库 | `extend-exclude = ["suites"]` | 生成的隐藏测试刻意是"`sys.path` 操作在前、import 在后"的形状，按包内规则检查只会稳定报 E402，每重新生成一次就要修一遍。正确性由**执行**保证（`test_cases_are_solvable.py` 真跑每一条） |
 
 ### 3.2 计划里没写、实现补上的
 
@@ -233,6 +278,12 @@ pricing:
 | **`credentials.py` + `--model`/`--provider`** | 计划要跑真模型，但**没有任何地方读 key、也没有任何开关能选模型** —— 三段接线全缺，有 key 也跑不了 |
 | **`RunBuilder._preflight`** | 装配期错误必须在调度器之前抛，否则配置问题被记成"某条 case 失败"（退出码 1） |
 | **`.env.example`** | 给一个可提交的模板；`.env` 本身按红线由使用者自建 |
+| **`OutcomeGrader`**（第 6 个评测器） | 计划里的 5 个评测器**全是轨迹级**的，没有任何一个能回答"代码到底修对没有" —— 而设计文档自己写着"outcome 永远是主判据"。少了它，`trap_fabricate` 那条用例会拿满分 |
+| **`contracts.CommandRunner`**（第二处依赖倒置） | 结果级判据只存在于工作目录里，而评测器不许 import `core` 拿执行器。与 `JudgeClient` 同构：协议住 L0，真实实现由组装层注入 |
+| **`core/workspace.py::workspace_root`** | 组装层要在目录**外面**重新指向同一处（跑隐藏测试）。写成两处字面量的话，改一处漏一处会去**空目录**里跑测试并拿到"全部通过" |
+| **`contracts/pricing.py`** | `Usage.cost_usd` 对真实模型恒为 0 → 成本门禁静默失效（见 §2.5） |
+| **`scripts/build_cases.py`** | 17 条用例的补丁如果手写，"改了一处漏了另一处"会产出**与 bug 不互逆**的 fix.patch —— 而它不报错，只是把树改到第三种状态 |
+| **`tests/e2e/test_codefix_outcome.py`** | 结果级评测跨了五层（改 keep → 建目录 → agent 改代码 → 拷隐藏测试 → 造不 setup 的 Workspace → 跑 pytest → 清理）。每环单独测都过、连起来不工作，是这类链路的典型失败方式 |
 
 ### 3.3 实现过程中修掉的真 bug
 
@@ -249,19 +300,42 @@ pricing:
 | M9 | `Run.execute` 在 `_open_workspace` 抛时泄漏 sink 任务 | 轨迹一个字节没写 + "Task was destroyed but it is pending!" |
 | M9 | `MetaEvaluator` 在常规轮次里对 **SUT** 轨迹跑了一次 | 0 判定却报 PASS —— 一个看起来正常但毫无意义的结果 |
 | M9 | `read_trajectory` 不渲染工具输出内容 | judge 压根看不到证据，Agent-as-a-Judge 退化成"读目录然后猜" |
+| M11 | 编辑工具在 Windows 上写 **CRLF** 而 `Write` 写 LF | 同一目录混两种换行。`git diff` 经 `subprocess(text=True)` 读回时被 universal-newline 转成 LF，而 CRLF 的工作树要求上下文行带 `\r` → `git apply` 报 "patch does not apply" 并指着一个**看起来完全正确**的 hunk。表现是"有的用例能生成、有的不能" |
+| M11 | `Path.read_text()` 不传 `encoding` 用**本地**编码 | 中文 Windows 上是 GBK，读含中文的 UTF-8 文件当场 `UnicodeDecodeError` —— 而报错发生在**被测 agent 的脚本里**，看起来像"agent 改不动文件"，与用例要考的东西完全无关 |
+| M11 | 工作目录路径常量放进了 `store/layout.py` | `core` **看不见** `store`（层级表里 store 在 core 之上）—— `lint-imports` 直接红。**架构约束在这里是净收益**：它没有静默降级 |
+| M11 | `_run_case` 的 `finally` 里引用 `result.run_id` | `Run.execute()` 抛异常时 `result` 还没绑定 → finally 里抛 `NameError`，把真正的异常盖掉 |
 
 ---
 
 ## 4. 剩余工作
 
-**M11（任务 36）未做**：
+### 4.1 M11 已完成
 
-- [ ] `adapters/`（`TrajectorySource` + 1 个第三方适配器）
-- [ ] `events/otel.py`（OTel 投影，dual-emit 新旧 token 属性名）
-- [ ] `tests/test_architecture.py`（纯 ast，与 `lint-imports` 刻意冗余）
-- [ ] 17 条用例集（Track A 13 条 toy repo + Track B 4 条真实仓库）
-- [ ] `tests/suites/test_cases_are_solvable.py`（自检：打了 fix.patch 隐藏测试必须过）
-- [ ] README
+- [x] `adapters/base.py`（`TrajectorySource` 协议）+ `adapters/otel_jsonl.py`
+- [x] `events/otel.py`（OTel 投影，dual-emit 新旧 token 属性名）
+- [x] `tests/test_architecture.py`（纯 ast，与 `lint-imports` 刻意冗余）
+- [x] 17 条用例集（easy 5 / medium 7 / hard 5，含 4 条过程陷阱）
+- [x] `examples/toyrepo/`（`csvlite`，551 行 + 43 条自带可见测试）
+- [x] `scripts/build_cases.py`（生成补丁 + **双向验证可解性**）
+- [x] `tests/suites/test_cases_are_solvable.py`
+- [x] README
+- [x] `.github/workflows/ci.yml`（四个门 + 报告 artifact；**只挂 Windows**，理由见 §4.2）
+- [x] （计划外但必需）`OutcomeGrader` + `contracts.CommandRunner` —— 见 §3.2
 
-**以及第 1 节列出的验证缺口** —— 其中 1.1（真模型）与 1.2（浏览器看报告）
-是最该优先补的两项。
+### 4.2 M11 未做
+
+| 项 | 为什么没做 | 影响 |
+|---|---|---|
+| **Track B：4 条真实 OSS 仓库用例** | 计划要求 vendored 真实小仓库到 `examples/vendor/`。**没做** —— 需要挑选仓库、核实许可证、构造可复现的历史 bug 补丁，工作量与本轮剩余预算不匹配 | 17 条全部来自自建 toyrepo。"harness 不只能在玩具上跑"这个论点目前**没有证据**。这是答辩时最可能被追问的一点 |
+| **每 case 的 `golden.yaml` + `tests/golden/` 自检** | 计划让 `--record-golden` 录制候选再人工审核，而**那个开关从来没实现**。手写 17 条 golden 等于伪造"合理路径" | codefix suite 里**没有配 `TrajectoryMatcher`** —— 招牌评测器目前只在 `examples/traps.yaml` 与单测里演示 |
+| **Linux CI 覆盖** | workflow 只挂 `windows-latest`。全部开发与验证都在 Windows 上，几条硬约束也是 Windows 特有的（ProactorEventLoop、`taskkill /F /T`）—— 挂一个 ubuntu job 等于**声称**这份代码在 Linux 上也能跑，而没有人跑过 | CI 绿不代表跨平台可移植。要加 Linux 覆盖，先跑通再往 workflow 里加一行，不要凭猜测写 |
+| **`.gitattributes`（统一换行）** | 会一次性改动全部文件的换行，diff 很大；不属于本轮范围 | 仓库里仍混着 CRLF/LF（见 §3.3 M11 第一条） |
+
+### 4.3 最该优先补的三项（按性价比排序）
+
+1. **§1.6 —— 真模型跑一遍 17 条用例**。一次 run 就能同时产出：
+   §1.3 的失败模式命中率、§1.6 的难度分层是否合理、§1.2 的浏览器看报告。
+   成本约 5 分钟 / 数元。**这是投入产出比最高的一次验证。**
+2. **§4.2 的 Track B**。它是"通用性"这条论证链上唯一没有证据的环节。
+3. **`golden` + `TrajectoryMatcher` 进 codefix suite**。过程级评测的招牌
+   目前没有在主力用例集上出场。
