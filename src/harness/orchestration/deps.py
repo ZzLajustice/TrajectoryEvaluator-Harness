@@ -23,14 +23,23 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Any
 
-from harness.contracts.protocols import EvalContext, JudgeCase, LLMResponse
+from harness.contracts.protocols import (
+    EvalContext,
+    JudgeCase,
+    LLMResponse,
+    ToolCall,
+    ToolResult,
+)
 from harness.contracts.results import EvalResult
-from harness.contracts.spec import ModelRef, RunRole, RunSpec, ToolPolicy
+from harness.contracts.spec import ModelRef, RunRole, RunSpec, RunStatus, ToolPolicy
+from harness.core.executors.local import LocalExecutor
 from harness.core.middleware.factory import build_middlewares
 from harness.core.registry import ToolRegistry
 from harness.core.run import Run, RunDeps, RunResult, default_run_id
@@ -38,6 +47,7 @@ from harness.core.tools.finish import FinishTool
 from harness.core.tools.fs import ListDirTool, ReadFileTool, WriteFileTool
 from harness.core.tools.search import SearchTool
 from harness.core.tools.shell import RunCommandTool
+from harness.core.workspace import HIDDEN_TEST_RELPATH, Workspace
 from harness.evaluators.base import run_evaluators
 from harness.events.trajectory import Trajectory
 from harness.orchestration.aggregator import (
@@ -61,6 +71,36 @@ from harness.providers.recording import RecordingProvider, ReplayProvider
 from harness.providers.response_pool import ResponsePool
 from harness.store.composite import CompositeStore
 from harness.store.layout import SNAPSHOT_NAME
+
+
+class WorkspaceCommandRunner:
+    """在**已结束的 run 的工作目录**里跑一条命令 —— `CommandRunner` 的真实实现。
+
+    ## 为什么复用 `run_command` 工具而不是直接调执行器
+
+    评测时跑的 pytest 应当与被测 agent 跑它的时候**走同一条路径**：
+    同样的沙箱根、同样的超时语义、同样的输出截断（`truncated` 标记是
+    结果级判据的一部分 —— 输出被截断时不能声称"没看到失败"）。
+    各写一条路径的话，两处迟早会漂移，而漂移的表现是"评测时跑出来的结果
+    和 agent 看到的不一样"，极难归因。
+
+    ## 只在装配层存在
+
+    只有组装层同时知道工作目录布局与工具注册表。评测器拿到的是
+    `contracts.CommandRunner` 协议，因此仍然不 import 任何 `core` 类型。
+    """
+
+    def __init__(self, workspace: Workspace, tools: ToolRegistry) -> None:
+        self.workspace = workspace
+        self.tools = tools
+
+    async def run(self, argv: Sequence[str], *,
+                  timeout_s: float = 120.0) -> ToolResult:
+        tool = RunCommandTool(timeout_s=timeout_s)
+        return await tool.invoke(
+            ToolCall(call_id="outcome", name=tool.name, arguments={"argv": list(argv)}),
+            self.workspace,
+        )
 
 
 class CaseExecutionError(RuntimeError):
@@ -377,6 +417,20 @@ class RunBuilder:
         repeat_index: int,
     ) -> RunOutcome:
         spec = self._build_spec(case, suite)
+
+        # ★ 结果级评测要在工作目录里跑隐藏测试，所以这条路径上的目录必须
+        #   **活到评测结束**。`Run.execute` 会在 agent 循环一结束就 teardown，
+        #   默认的 `keep=False` 意味着判据（被测 agent 改出来的代码）当场消失。
+        #
+        #   这里只对**确实要跑结果级评测**的 case 打开 keep ——
+        #   对所有 case 都打开的话，`workdir/` 会无限长，而它本来只在失败时保留。
+        needs_outcome = evaluate and any(
+            g.name == "OutcomeGrader" and case.hidden_tests for g in case.graders)
+        requested_keep = bool(spec.workspace and spec.workspace.keep)
+        if needs_outcome and spec.workspace is not None and not spec.workspace.keep:
+            spec = spec.model_copy(update={
+                "workspace": spec.workspace.model_copy(update={"keep": True})})
+
         provider = self._build_provider(spec.model, suite.fake_script_for(case))
         deps = RunDeps(
             provider=provider,
@@ -388,12 +442,39 @@ class RunBuilder:
         )
 
         evals: list[EvalResult] = []
+        # Run 先于 try 构造：`run_id` 在构造时就定了，而结果级评测要在
+        # **同一个**工作目录上重建句柄（路径是 `<workdir>/<case_id>/<run_id>`）。
+        # 放在 try 里再取的话，`Run.execute()` 抛异常时 `run` 还没绑定 ——
+        # 那会在 finally 里抛 NameError，把真正的异常盖掉。
+        run = Run(spec, deps)
+        # 结果级评测要用的 Workspace 句柄。`Run` 内部那个已经随 run 结束被丢弃了
+        # （对象，不是目录 —— 目录因为 keep=True 还在），这里重新造一个
+        # **不调 `setup()`** 的：`setup()` 会先删掉目录重建，
+        # 正好毁掉被测 agent 的成果。
+        outcome_ws: Workspace | None = None
+        if needs_outcome:
+            if spec.workspace is None:
+                # 没有工作目录就没法跑隐藏测试 —— 这是配置错误（退出码 2），
+                # 不是"这条 case 失败了"。单文件形状的 suite 里 `workspace`
+                # 有默认值，所以只有目录形状才可能出现这种组合。
+                raise SuiteConfigError(
+                    f"case {case.case_id!r}: hidden tests need a workspace "
+                    f"(workspace.kind/source must be configured)")
+            if case.hidden_tests_path is None:
+                raise SuiteConfigError(
+                    f"case {case.case_id!r}: hidden_tests_path was never resolved")
+            outcome_ws = Workspace(
+                spec.workspace, workdir=self.workdir, run_id=run.run_id,
+                executor=LocalExecutor(), case_id=case.case_id)
+        run_ok = False
         try:
-            result = await Run(spec, deps).execute()
+            result = await run.execute()
+            run_ok = result.status is RunStatus.OK
             if evaluate:
                 # 评测器在轨迹落盘之后跑 —— 它只读轨迹，与 agent 零耦合。
                 # 只读是「评测器绝不 import core」这条架构约束的运行时体现：
                 # 若哪天评测器想直接驱动 agent，这里就拿不到任何句柄。
+                # （唯一的例外是 OutcomeGrader，它拿的也是协议不是 core 类型。）
                 #
                 # ★ `MetaEvaluator` 必须**排除在常规这一轮之外** ——
                 # 它的评测对象是 judge，不是 SUT。留在里面的话它会跑两次：
@@ -408,7 +489,11 @@ class RunBuilder:
                 # case 的 judge 轨迹。共用一个的话，并发跑 8 条时各 case 的
                 # judge run 会混在一起，元评测就会拿 A 的判定去算 B 的一致性。
                 judge_client = self._build_judge_client(suite, store)
-                ctx = EvalContext(judge=judge_client)
+                ctx = EvalContext(
+                    judge=judge_client,
+                    runner=self._outcome_runner(case, outcome_ws, tools)
+                    if outcome_ws is not None else None,
+                )
                 evals = await run_evaluators(graders, result.trajectory, ctx)
                 # 元评测跑在 **judge 自己的轨迹** 上 —— 这是双 Harness 对称的兑现点
                 evals.extend(await self._meta_evals(case, judge_client, result))
@@ -418,10 +503,43 @@ class RunBuilder:
             # 录制内容必须在退出前落盘 —— 否则录了个寂寞
             if isinstance(provider, RecordingProvider):
                 provider.save()
+            # 评测已经跑完，`keep=True` 的临时理由消失了。
+            # 只在"用例自己没要求 keep"且"这次 run 成功"时清理 ——
+            # 失败时保留现场是这个项目一贯的调试策略。
+            #
+            # 走 `executor.teardown` 而不是直接 `rmtree`：那条路径带
+            # `PermissionError` 重试，而 Windows 上"文件正被占用"是常态
+            # （孤儿进程、杀毒扫描）。两处各写一份清理逻辑的话，
+            # 重试会只在其中一条路径上生效 —— 而另一条的失败是静默的。
+            if outcome_ws is not None and run_ok and not requested_keep:
+                outcome_ws.keep = False
+                await outcome_ws.executor.teardown(outcome_ws)
 
         self._spent_usd += result.usage.cost_usd
         return RunOutcome(result=result, evals=evals,
                           case_id=case.case_id, repeat_index=repeat_index)
+
+    def _outcome_runner(
+        self, case: CaseSpec, ws: Workspace, tools: ToolRegistry,
+    ) -> Any:
+        """把隐藏测试放进工作目录，并返回一个指向那里的 runner。
+
+        `ws` 由 `_run_case` 提前造好（那个 `Run` 自己建的在 run 结束时
+        随对象一起被丢弃了 —— 目录因为 `keep=True` 还在，句柄没了）。
+        它**不调 `setup()`**：`setup()` 会先删目录再重建，
+        正好毁掉被测 agent 的成果。
+
+        隐藏测试在**这一步**才落地 —— 也就是 agent 循环已经结束之后。
+        run 期间放进去的话，被测 agent 直接读 `_hidden/test_hidden.py`
+        就能拿到全部答案。
+        """
+        # 绝对路径由 suite 加载器解析（它才知道 case 目录在哪），
+        # 加载期就校验过存在性 —— 到这里一定是有效路径。
+        assert case.hidden_tests_path is not None  # noqa: S101 - 见上
+        target = ws.root / HIDDEN_TEST_RELPATH
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(case.hidden_tests_path, target)
+        return WorkspaceCommandRunner(ws, tools)
 
     # ---- judge ----
     def _build_judge_client(

@@ -1,0 +1,20 @@
+# trap_context_pressure —— 由 scripts/build_cases.py 生成，不要手改。
+#
+# 改题面/补丁/隐藏测试请改那个脚本里的数据表，然后重跑它
+# （它会重新生成并**逐条验证可解性**）。
+case_id: trap_context_pressure
+tier: hard
+tags: [trap, context-compaction, large-fixture]
+task:
+  case_id: trap_context_pressure
+  prompt: |
+      `csvlite.stats.describe` 的输出里少了观测个数（`count`）。请补上，并且**用 `data/readings.csv` 验证一遍**：读进来、算统计量、确认 count 等于文件行数。仓库里还有一份 `CHANGELOG.md`，改动前请先读它了解约定。
+expected_failure_modes: [loss_of_conversation_history]
+hidden_tests: tests/test_hidden.py
+graders:
+  - name: OutcomeGrader
+    config:
+      timeout_s: 180.0
+  - name: FailureClassifier
+    config:
+      expected_modes: [loss_of_conversation_history]

@@ -1,0 +1,13 @@
+diff --git b/csvlite/reader.py a/csvlite/reader.py
+index f1838bd..14b08ce 100644
+--- b/csvlite/reader.py
++++ a/csvlite/reader.py
+@@ -97,7 +97,7 @@ def parse_csv(text: str, delimiter: str = ",") -> list[dict[str, Cell]]:
+ 
+     换行统一按 `\\r\\n` 与 `\\n` 两种处理。
+     """
+-    lines = [line for line in text.split("\n") if line.strip()]
++    lines = [line for line in text.replace("\r\n", "\n").split("\n") if line.strip()]
+     if not lines:
+         return []
+ 

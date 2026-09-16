@@ -20,6 +20,7 @@ from harness.evaluators.efficiency import EfficiencyAnalyzer
 from harness.evaluators.failure_classify import FailureClassifier
 from harness.evaluators.grounding import GroundingChecker
 from harness.evaluators.meta import MetaEvaluator
+from harness.evaluators.outcome import OutcomeGrader
 from harness.evaluators.trajectory_match import TrajectoryMatcher
 
 # 允许在 suite 里引用的评测器。
@@ -31,6 +32,9 @@ EVALUATOR_REGISTRY: dict[str, type] = {
     "FailureClassifier": FailureClassifier,
     "GroundingChecker": GroundingChecker,
     "MetaEvaluator": MetaEvaluator,
+    # 唯一的结果级评测器 —— 其余 5 个都只读轨迹。
+    # 少了它，codefix 用例只有过程指标，而"改得很漂亮但没修好"会拿满分。
+    "OutcomeGrader": OutcomeGrader,
 }
 
 

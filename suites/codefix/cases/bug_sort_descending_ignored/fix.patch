@@ -1,0 +1,14 @@
+diff --git b/csvlite/table.py a/csvlite/table.py
+index 508ac64..2e27088 100644
+--- b/csvlite/table.py
++++ a/csvlite/table.py
+@@ -102,7 +102,8 @@ class Table:
+         # 缺失值（None）排在最后 —— 它们不是"最小值"，是"没有值"。
+         present = [row for row in self.rows if row[column] is not None]
+         absent = [row for row in self.rows if row[column] is None]
+-        ordered = sorted(present, key=lambda row: _sort_key(row[column]))
++        ordered = sorted(present, key=lambda row: _sort_key(row[column]),
++                         reverse=descending)
+         return replace(self, rows=tuple(ordered) + tuple(absent))
+ 
+     def group_count(self, column: str) -> dict[Cell, int]:

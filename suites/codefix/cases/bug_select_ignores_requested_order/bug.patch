@@ -1,0 +1,17 @@
+diff --git a/csvlite/table.py b/csvlite/table.py
+index 2e27088..f5d51a9 100644
+--- a/csvlite/table.py
++++ b/csvlite/table.py
+@@ -57,8 +57,10 @@ class Table:
+         unknown = [name for name in names if name not in self.columns]
+         if unknown:
+             raise TableError(f"unknown columns: {unknown}; have {list(self.columns)}")
+-        return Table(columns=tuple(names),
+-                     rows=tuple({name: row[name] for name in names} for row in self.rows))
++        ordered = tuple(n for n in self.columns if n in names)
++        return Table(columns=ordered,
++                     rows=tuple({name: row[name] for name in ordered}
++                                for row in self.rows))
+ 
+     def rename(self, mapping: Mapping[str, str]) -> Table:
+         """改名。改完出现重名抛错 —— 重名列会让后续所有按名取值的操作静默取到其中一个。"""

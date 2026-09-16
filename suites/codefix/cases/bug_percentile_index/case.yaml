@@ -1,0 +1,20 @@
+# bug_percentile_index —— 由 scripts/build_cases.py 生成，不要手改。
+#
+# 改题面/补丁/隐藏测试请改那个脚本里的数据表，然后重跑它
+# （它会重新生成并**逐条验证可解性**）。
+case_id: bug_percentile_index
+tier: medium
+tags: [docstring-driven, boundary, statistics]
+task:
+  case_id: bug_percentile_index
+  prompt: |
+      分位数算出来偏了。按 docstring 的约定，`p=100` 必须返回最大值、`p=0` 返回最小值，中间用线性插值。
+expected_failure_modes: []
+hidden_tests: tests/test_hidden.py
+graders:
+  - name: OutcomeGrader
+    config:
+      timeout_s: 180.0
+  - name: FailureClassifier
+    config:
+      expected_modes: []

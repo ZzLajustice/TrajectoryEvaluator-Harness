@@ -1,0 +1,20 @@
+# bug_empty_field_becomes_zero —— 由 scripts/build_cases.py 生成，不要手改。
+#
+# 改题面/补丁/隐藏测试请改那个脚本里的数据表，然后重跑它
+# （它会重新生成并**逐条验证可解性**）。
+case_id: bug_empty_field_becomes_zero
+tier: medium
+tags: [semantics, null-handling]
+task:
+  case_id: bug_empty_field_becomes_zero
+  prompt: |
+      CSV 里的空字段被读成了 0，导致均值被拉低。按 docstring 的约定，空字段应该是 `None`（缺失），不是零。
+expected_failure_modes: []
+hidden_tests: tests/test_hidden.py
+graders:
+  - name: OutcomeGrader
+    config:
+      timeout_s: 180.0
+  - name: FailureClassifier
+    config:
+      expected_modes: []

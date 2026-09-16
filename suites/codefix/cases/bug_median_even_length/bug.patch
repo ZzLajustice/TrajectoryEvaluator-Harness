@@ -1,0 +1,13 @@
+diff --git a/csvlite/stats.py b/csvlite/stats.py
+index 898f5a6..9969e2d 100644
+--- a/csvlite/stats.py
++++ b/csvlite/stats.py
+@@ -47,7 +47,7 @@ def median(values: Sequence[float]) -> float:
+     middle = len(ordered) // 2
+     if len(ordered) % 2 == 1:
+         return ordered[middle]
+-    return (ordered[middle - 1] + ordered[middle]) / 2
++    return float(ordered[middle])
+ 
+ 
+ def stdev(values: Sequence[float], *, sample: bool = True) -> float:

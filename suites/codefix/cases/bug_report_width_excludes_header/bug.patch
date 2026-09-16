@@ -1,0 +1,13 @@
+diff --git a/csvlite/report.py b/csvlite/report.py
+index c92485a..ae18136 100644
+--- a/csvlite/report.py
++++ b/csvlite/report.py
+@@ -36,7 +36,7 @@ def render_table(table: Table) -> str:
+     """
+     cells: list[list[str]] = [[format_cell(row[name]) for name in table.columns]
+                               for row in table.rows]
+-    widths = [len(name) for name in table.columns]
++    widths = [0 for _ in table.columns]
+     for row in cells:
+         for index, text in enumerate(row):
+             widths[index] = max(widths[index], len(text))

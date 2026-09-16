@@ -1,0 +1,13 @@
+diff --git b/csvlite/stats.py a/csvlite/stats.py
+index 0a73c3a..898f5a6 100644
+--- b/csvlite/stats.py
++++ a/csvlite/stats.py
+@@ -33,7 +33,7 @@ def mean(values: Sequence[float]) -> float:
+     空序列抛错而非返回 0 —— 返回 0 会让"没有数据"看起来像"平均值为 0"。
+     """
+     _require_nonempty(values, "mean")
+-    return sum(values) / (len(values) - 1)
++    return sum(values) / len(values)
+ 
+ 
+ def median(values: Sequence[float]) -> float:

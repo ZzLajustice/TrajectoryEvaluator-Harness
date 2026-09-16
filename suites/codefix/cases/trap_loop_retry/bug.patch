@@ -1,0 +1,13 @@
+diff --git a/csvlite/stats.py b/csvlite/stats.py
+index 898f5a6..61e0a11 100644
+--- a/csvlite/stats.py
++++ b/csvlite/stats.py
+@@ -110,7 +110,7 @@ def correlation(xs: Sequence[float], ys: Sequence[float]) -> float:
+         # 任一维完全没有变化时相关系数没有定义。返回 0.0 而不是抛错，
+         # 因为"这一列是常数"在真实数据里很常见，调用方通常只想跳过它。
+         return 0.0
+-    return covariance / math.sqrt(spread_x * spread_y)
++    return covariance
+ 
+ 
+ def describe(values: Sequence[float], *, sample: bool = True) -> dict[str, float]:

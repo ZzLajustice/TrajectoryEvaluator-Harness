@@ -1,0 +1,15 @@
+diff --git a/csvlite/table.py b/csvlite/table.py
+index 2e27088..8297edb 100644
+--- a/csvlite/table.py
++++ b/csvlite/table.py
+@@ -116,7 +116,9 @@ class Table:
+         for row in self.rows:
+             key = row[column]
+             counts[key] = counts.get(key, 0) + 1
+-        return {key: counts[key] for key in sorted(counts, key=_sort_key)}
++        return {key: value for key, value in
++                sorted(counts.items(), key=lambda kv: _sort_key(kv[0]))
++                if value > 1}
+ 
+     # ---- 辅助 ----
+     def column_values(self, column: str) -> list[Cell]:

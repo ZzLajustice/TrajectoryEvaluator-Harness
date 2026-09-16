@@ -1,0 +1,13 @@
+diff --git a/csvlite/table.py b/csvlite/table.py
+index 2e27088..688b634 100644
+--- a/csvlite/table.py
++++ b/csvlite/table.py
+@@ -38,7 +38,7 @@ class Table:
+             for row in materialised:
+                 for name in row:
+                     seen.setdefault(name, None)
+-            derived: Columns = tuple(seen)
++            derived: Columns = tuple(sorted(seen))
+         else:
+             derived = tuple(columns)
+         for row in materialised:

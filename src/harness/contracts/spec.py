@@ -92,6 +92,15 @@ class WorkspaceSpec(_Model):
     kind: Literal["copy", "git_worktree", "tempdir"] = "copy"
     source: str | None = None  # 相对仓库根的路径
     patch: str | None = None  # case 私有补丁（如 bug.patch）
+    #: case 私有的附加文件目录，在 `source` 之后、`patch` 之前覆写进工作目录。
+    #:
+    #: 为什么需要它：有些用例的考点是**环境里多了一个文件**
+    #: （一段诱导注入的注释、一份大到会撑爆上下文的数据）。
+    #: 把这类文件塞进 `bug.patch` 也能让 SUT 看见，但补丁就同时承担了
+    #: "制造 bug"和"布置场景"两件事 —— 而 `fix.patch`（反向补丁）会顺手
+    #: 把这些文件删掉，读起来像"修复等于删掉题目"。
+    #: 分开之后补丁只含代码改动，场景由 overlay 负责，参考修复不会误伤它。
+    overlay: str | None = None
     keep: bool = False
     keep_on_failure: bool = True
 

@@ -1,0 +1,13 @@
+diff --git a/csvlite/reader.py b/csvlite/reader.py
+index 14b08ce..dd83728 100644
+--- a/csvlite/reader.py
++++ b/csvlite/reader.py
+@@ -76,7 +76,7 @@ def infer_type(raw: str) -> Cell:
+     """
+     text = raw.strip()
+     if not text:
+-        return None
++        return 0
+     try:
+         return int(text)
+     except ValueError:

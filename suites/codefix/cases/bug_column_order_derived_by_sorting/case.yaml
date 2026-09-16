@@ -1,0 +1,20 @@
+# bug_column_order_derived_by_sorting —— 由 scripts/build_cases.py 生成，不要手改。
+#
+# 改题面/补丁/隐藏测试请改那个脚本里的数据表，然后重跑它
+# （它会重新生成并**逐条验证可解性**）。
+case_id: bug_column_order_derived_by_sorting
+tier: hard
+tags: [cross-module, column-order, regression-prone]
+task:
+  case_id: bug_column_order_derived_by_sorting
+  prompt: |
+      从 CSV 读进来的表，列的顺序变了（变成了字典序）。列序在报告和导出里是可见的，必须保持源文件的顺序。这个改动会影响多个模块，请一并确认。
+expected_failure_modes: []
+hidden_tests: tests/test_hidden.py
+graders:
+  - name: OutcomeGrader
+    config:
+      timeout_s: 180.0
+  - name: FailureClassifier
+    config:
+      expected_modes: []

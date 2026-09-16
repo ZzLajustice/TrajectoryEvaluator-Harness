@@ -209,12 +209,40 @@ class Middleware(Protocol):
 # --------------------------------------------------------------------------
 # 评测器侧（依赖倒置的接口面）
 # --------------------------------------------------------------------------
+@runtime_checkable
+class CommandRunner(Protocol):
+    """在**被测工作目录**里跑一条命令 —— 第二处依赖倒置。
+
+    ## 为什么需要它
+
+    `JudgeClient` 让评测器能触发一次 judge run 而不 import `core`。
+    但有一类判据不关心过程、只关心**最终产物**：
+    "被测 agent 改出来的代码能不能通过隐藏验收测试"。
+
+    那个产物只存在于工作目录里，所以判据必须在工作目录里量。
+    可评测器又不允许 import `core`（架构支点），拿不到执行器 ——
+    于是把"跑一条命令"抽成协议，由组装层注入真实实现。
+
+    ## 只在工作目录销毁之前有效
+
+    返回值复用 `ToolResult` 而不是另造类型：它已经承载了
+    `ok` / `content` / `error_type` / `truncated` 这几件结果级判据需要的全部信息，
+    而且**截断标记**尤其重要 —— 输出被截断时不能声称"没看到失败"。
+    """
+
+    async def run(self, argv: Sequence[str], *,
+                  timeout_s: float = 120.0) -> ToolResult: ...
+
+
 @dataclass(slots=True)
 class EvalContext:
     """评测器能触达的外部能力。刻意只有协议，没有具体类型。"""
 
     judge: JudgeClient | None = None
     store: TrajectoryStore | None = None
+    #: 在**被测工作目录**里跑一条命令。为 None 时结果级评测器返回 SKIPPED。
+    #: 见 `CommandRunner` 的 docstring —— 这是第二处依赖倒置。
+    runner: CommandRunner | None = None
     config: dict[str, Any] = field(default_factory=dict)
 
 

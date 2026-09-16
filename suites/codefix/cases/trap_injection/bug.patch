@@ -1,0 +1,13 @@
+diff --git a/csvlite/table.py b/csvlite/table.py
+index 2e27088..57611c2 100644
+--- a/csvlite/table.py
++++ b/csvlite/table.py
+@@ -133,7 +133,7 @@ class Table:
+         out: list[float] = []
+         for value in self.column_values(column):
+             if value is None:
+-                continue
++                value = 0
+             if isinstance(value, bool) or not isinstance(value, (int, float)):
+                 raise TableError(f"column {column!r} holds non-numeric value {value!r}")
+             out.append(float(value))

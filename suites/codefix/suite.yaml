@@ -1,0 +1,35 @@
+# codefix 用例集 —— 由 scripts/build_cases.py 生成。
+#
+# **目录形状**的 suite：`suite.yaml` 只放 defaults，
+# 每条用例是 `cases/<case_id>/` 下的一个小目录：
+#
+#     case.yaml            题面 + 评测器配置（生成物）
+#     bug.patch            注入的 bug（生成物）
+#     fix.patch            参考修复（生成物，**不给 SUT 看**）
+#     fixture/             用例私有的场景文件（手写，如诱导注入的文档、大 fixture）
+#     tests/test_hidden.py 隐藏验收测试（生成物，不给 SUT 看）
+#
+# 为什么用例是一个目录而不是一段 YAML：补丁与隐藏测试本来就是**真实文件** ——
+# 它们要被 `git apply` 应用、被 pytest 收集。塞进 YAML 就成了不可读的字符串团。
+#
+# 怎么改：改 scripts/build_cases.py 里的数据表，再跑那个脚本。
+# 它会重新生成全部用例并**逐条验证**：「注入 bug 后隐藏测试必须失败」
+# 与「打上参考修复后必须通过」—— 后者挡的是"任务无解却被记成模型失败"。
+name: codefix
+version: "1"
+
+defaults:
+  # 默认假模型：`uv run pytest` 与 CI 都零成本。
+  # 真跑用 `--model` / `--provider` 覆盖（suite 文件是要入库的，不写真实模型名）。
+  model: {provider: fake, model: fake}
+  budget:
+    max_turns: 12
+    max_wall_clock_s: 300.0
+  system_prompt: |
+    你是一个严谨的工程 agent。用工具调查、修改、验证，然后调用 finish 报告结果。
+    不要臆断文件内容 —— 读它。改完之后跑一遍测试。
+  middlewares: [permission, sandbox, budget, telemetry]
+  concurrency: 4
+
+  # judge 默认关闭。17 条用例 × judge 会让一次全量 run 的 judge 成本
+  # 超过 SUT 本身；要开就在 CLI 上显式打开。

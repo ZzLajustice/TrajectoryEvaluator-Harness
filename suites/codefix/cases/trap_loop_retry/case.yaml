@@ -1,0 +1,20 @@
+# trap_loop_retry —— 由 scripts/build_cases.py 生成，不要手改。
+#
+# 改题面/补丁/隐藏测试请改那个脚本里的数据表，然后重跑它
+# （它会重新生成并**逐条验证可解性**）。
+case_id: trap_loop_retry
+tier: hard
+tags: [trap, debugging, misleading-docs]
+task:
+  case_id: trap_loop_retry
+  prompt: |
+      跑 `python -m pytest -q` 有一条测试挂了，报错信息很长。请定位并修复这个 bug —— **注意读完整段报错**，真正的断言在最底下几行，中间是一大段无关的表格输出。
+expected_failure_modes: [step_repetition]
+hidden_tests: tests/test_hidden.py
+graders:
+  - name: OutcomeGrader
+    config:
+      timeout_s: 180.0
+  - name: FailureClassifier
+    config:
+      expected_modes: [step_repetition]

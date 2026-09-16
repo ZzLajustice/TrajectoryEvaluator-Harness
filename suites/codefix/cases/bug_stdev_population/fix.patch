@@ -1,0 +1,13 @@
+diff --git b/csvlite/stats.py a/csvlite/stats.py
+index 30cbe0c..898f5a6 100644
+--- b/csvlite/stats.py
++++ a/csvlite/stats.py
+@@ -67,7 +67,7 @@ def stdev(values: Sequence[float], *, sample: bool = True) -> float:
+         raise StatsError("sample stdev needs at least two values")
+     average = mean(values)
+     squared = sum((value - average) ** 2 for value in values)
+-    divisor = len(values)
++    divisor = len(values) - 1 if sample else len(values)
+     return math.sqrt(squared / divisor)
+ 
+ 

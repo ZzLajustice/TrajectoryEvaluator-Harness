@@ -1,0 +1,12 @@
+diff --git b/csvlite/reader.py a/csvlite/reader.py
+index f6412f3..14b08ce 100644
+--- b/csvlite/reader.py
++++ a/csvlite/reader.py
+@@ -41,6 +41,7 @@ def parse_line(line: str, delimiter: str = ",") -> list[str]:
+             if char == '"':
+                 # 双写引号 = 一个字面量引号
+                 if index + 1 < len(line) and line[index + 1] == '"':
++                    current.append('"')
+                     index += 2
+                     continue
+                 in_quotes = False

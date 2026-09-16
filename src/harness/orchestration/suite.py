@@ -37,6 +37,7 @@ cases:
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any, Literal
 
@@ -51,6 +52,7 @@ from harness.contracts.spec import (
     WorkspaceSpec,
 )
 from harness.core.middleware.factory import CANONICAL_ORDER, KNOWN_MIDDLEWARES
+from harness.core.workspace import HIDDEN_TEST_RELPATH
 from harness.orchestration.evalrunner import EVALUATOR_REGISTRY
 
 
@@ -131,11 +133,27 @@ class CaseSpec(_Model):
     # 覆写 defaults；None = 继承
     middlewares: list[str] | None = None
     fake_script: list[dict[str, Any]] | None = None
+    # 隐藏验收测试，路径相对**本用例的目录**（如 `tests/test_hidden.py`）。
+    # 它不给被测 agent 看 —— 在 run 结束、评测开始前才被拷进工作目录。
+    hidden_tests: str | None = None
+    #: 加载期解析出的绝对路径。`exclude=True` 是因为它是派生的：
+    #: 进指纹会让同一份用例在不同机器上指纹不同，从而让 diff 误判"不可比"。
+    hidden_tests_path: Path | None = Field(default=None, exclude=True)
+    #: 这条用例的 `case.yaml` 所在目录。目录形状的 suite 用它解析
+    #: `hidden_tests` 与 `bug.patch` 这类相对路径。同样是派生字段。
+    source_dir: Path | None = Field(default=None, exclude=True)
 
     @model_validator(mode="after")
     def _check(self) -> CaseSpec:
         if self.repeat < 1:
             raise SuiteConfigError(f"case {self.case_id!r}: repeat must be >= 1")
+        if self.hidden_tests and not any(
+                g.name == "OutcomeGrader" for g in self.graders):
+            # 配了隐藏测试却没有结果级评测器 = 那份测试永远不会被跑，
+            # 而"配了"看起来像"评了"。
+            raise SuiteConfigError(
+                f"case {self.case_id!r}: hidden_tests is set but no OutcomeGrader "
+                f"is configured to run it — the tests would never be executed")
         bad = sorted(set(self.case_id) & _ILLEGAL_IN_PATH)
         if bad:
             raise SuiteConfigError(
@@ -225,10 +243,30 @@ class Suite(_Model):
 
 
 def load_suite(path: Path | str) -> Suite:
-    """加载并**完整校验** suite 文件。任何配置错误在这里抛错。"""
+    """加载并**完整校验** suite。任何配置错误在这里抛错。
+
+    接受两种形状：
+
+    | 形状 | 用途 |
+    |---|---|
+    | 单个 `.yaml` 文件（`defaults` + `cases`） | 绝大多数 suite；`examples/` 下都是 |
+    | **一个目录**（内含 `suite.yaml` + `cases/*/case.yaml`） | 用例带补丁/隐藏测试这类多文件产物时 |
+
+    目录形状存在的理由是**用例不再是一个 YAML 片段，而是一个小目录**：
+    codefix 类用例除了 `case.yaml` 还带 `bug.patch` / `fix.patch` /
+    `tests/test_hidden.py`。把这些塞进一个 YAML 里会让它变成不可读的
+    字符串团，而**补丁与隐藏测试本来就该是真实文件** ——
+    它们要被 `git apply` 和应用、被 pytest 收集。
+
+    两种形状都走同一份 `CaseSpec` 校验 —— 这里只负责把目录拼成一个
+    内存里的 suite 文档，**不放松任何校验**。
+    """
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"suite not found: {path}")
+    if path.is_dir():
+        return _load_suite_dir(path)
+
     # ★ 只允许 safe_load —— 绝不执行 YAML 里的任意 Python 对象
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
@@ -237,4 +275,72 @@ def load_suite(path: Path | str) -> Suite:
         )
     suite = Suite.model_validate(raw)
     suite.source_path = path
+    _resolve_hidden_tests(suite, base=path.parent)
     return suite
+
+
+def _load_suite_dir(root: Path) -> Suite:
+    """目录形状：`suite.yaml` 提供 defaults，`cases/*/case.yaml` 各提供一条用例。"""
+    manifest = root / "suite.yaml"
+    if not manifest.exists():
+        raise SuiteConfigError(
+            f"{root} looks like a suite directory but has no suite.yaml")
+    raw = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise SuiteConfigError(f"{manifest}: root must be a mapping")
+
+    case_files = sorted((root / "cases").glob("*/case.yaml"))
+    if not case_files:
+        raise SuiteConfigError(f"{root}: no cases/*/case.yaml found")
+    # 目录名与 case_id 必须一致 —— 不一致时 `test_cases_are_solvable` 那样的
+    # 自检脚本会去错目录找补丁，而"找不到"很容易被当成"这条没配补丁"。
+    for case_file in case_files:
+        doc = yaml.safe_load(case_file.read_text(encoding="utf-8"))
+        if not isinstance(doc, dict):
+            raise SuiteConfigError(f"{case_file}: root must be a mapping")
+        if doc.get("case_id") != case_file.parent.name:
+            raise SuiteConfigError(
+                f"{case_file}: case_id {doc.get('case_id')!r} does not match its "
+                f"directory name {case_file.parent.name!r}")
+        # 目录形状下 `bug.patch` 是约定的固定文件名，不必每条 case 都写
+        workspace = doc.setdefault("workspace", {})
+        if isinstance(workspace, dict):
+            workspace.setdefault("patch", str(case_file.parent / "bug.patch"))
+            # `fixture/` 存在时自动当作 overlay —— 用例私有的场景文件
+            # （诱导注入的注释、撑爆上下文的数据）不必每条 case 手写路径
+            fixture = case_file.parent / "fixture"
+            if fixture.is_dir():
+                workspace.setdefault("overlay", str(fixture))
+        # 相对路径（hidden_tests）以**用例自己的目录**为基准
+        doc.setdefault("source_dir", str(case_file.parent))
+        raw.setdefault("cases", []).append(doc)
+
+    suite = Suite.model_validate(raw)
+    suite.source_path = manifest
+    _resolve_hidden_tests(suite, base=root)
+    return suite
+
+
+def _resolve_hidden_tests(suite: Suite, *, base: Path) -> None:
+    """把 `hidden_tests` 的相对路径解析成绝对路径，并**在这里**校验存在。
+
+    校验放在加载期而不是评测期：隐藏测试缺失时，评测期才发现的话
+    OutcomeGrader 会返回 SKIPPED，而 **SKIPPED 会让这条 case 在
+    `pass_rate` 里被静默排除** —— 一条本该判对错的用例就这样消失了。
+    """
+    for case in suite.cases:
+        if not case.hidden_tests:
+            continue
+        resolved = (case.source_dir or base) / case.hidden_tests
+        if not resolved.exists():
+            raise SuiteConfigError(
+                f"case {case.case_id!r}: hidden_tests not found: {resolved}")
+        case.hidden_tests_path = resolved
+        # 补上跑它的命令。argv 由加载器给默认值而不是让每条 case 手写 ——
+        # 手写意味着 17 条用例里迟早有一条拼错，而拼错的表现是
+        # "pytest 找不到文件"被记成 **agent 没修好**。
+        for grader in case.graders:
+            if grader.name == "OutcomeGrader":
+                grader.config.setdefault(
+                    "argv", [sys.executable, "-m", "pytest",
+                             HIDDEN_TEST_RELPATH, "-q"])

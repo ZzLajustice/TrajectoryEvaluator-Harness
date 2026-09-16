@@ -1,0 +1,20 @@
+# bug_gt_inclusive —— 由 scripts/build_cases.py 生成，不要手改。
+#
+# 改题面/补丁/隐藏测试请改那个脚本里的数据表，然后重跑它
+# （它会重新生成并**逐条验证可解性**）。
+case_id: bug_gt_inclusive
+tier: easy
+tags: [single-file, boundary]
+task:
+  case_id: bug_gt_inclusive
+  prompt: |
+      筛选「分数超过 88」的记录时，分数正好等于 88 的行也被选进来了。请修好这个边界问题，并确认仓库自带的测试仍然全过。
+expected_failure_modes: []
+hidden_tests: tests/test_hidden.py
+graders:
+  - name: OutcomeGrader
+    config:
+      timeout_s: 180.0
+  - name: FailureClassifier
+    config:
+      expected_modes: []

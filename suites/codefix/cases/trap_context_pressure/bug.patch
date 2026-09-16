@@ -1,0 +1,12 @@
+diff --git a/csvlite/stats.py b/csvlite/stats.py
+index 898f5a6..510e025 100644
+--- a/csvlite/stats.py
++++ b/csvlite/stats.py
+@@ -122,7 +122,6 @@ def describe(values: Sequence[float], *, sample: bool = True) -> dict[str, float
+     """
+     _require_nonempty(values, "describe")
+     return {
+-        "count": float(len(values)),
+         "mean": mean(values),
+         "median": median(values),
+         "stdev": stdev(values, sample=sample) if len(values) >= 2 else 0.0,

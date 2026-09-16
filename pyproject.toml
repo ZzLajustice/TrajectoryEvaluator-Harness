@@ -118,6 +118,21 @@ exclude-newer-package = { openai = false, anthropic = false }
 [tool.ruff]
 line-length = 100
 src = ["src"]
+# `suites/` 是**数据不是模块**（同 CLAUDE.md 对它的定位）。
+#
+# 里面除了 YAML 与补丁，还有 `tests/test_hidden.py` —— 它们是**生成物**
+# （`scripts/build_cases.py` 产出），而且刻意写成"在被测工作目录里跑"的形状：
+# 先 `sys.path.insert(找到 csvlite 的那一层)`，再 import 被测包。
+# 那个顺序不能反，所以按包内代码的规则检查它只会稳定地报 E402，
+# 而每重新生成一次就要再修一遍 —— 纯粹的噪音。
+#
+# 它们的正确性由**执行**保证，而且比 lint 更强：
+# `tests/suites/test_cases_are_solvable.py` 会把每条用例真的跑一遍
+# （注入 bug 后必须失败、打上参考修复后必须通过）。
+#
+# `examples/toyrepo` **不**排除：它是被测对象本身，
+# 代码风格应当和真实项目一样经得起看。
+extend-exclude = ["suites"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "D", "I", "B", "DTZ", "TID251", "PLE", "SIM101"]

@@ -1,0 +1,20 @@
+# bug_quote_unescape —— 由 scripts/build_cases.py 生成，不要手改。
+#
+# 改题面/补丁/隐藏测试请改那个脚本里的数据表，然后重跑它
+# （它会重新生成并**逐条验证可解性**）。
+case_id: bug_quote_unescape
+tier: easy
+tags: [single-file, parsing]
+task:
+  case_id: bug_quote_unescape
+  prompt: |
+      解析带引号的 CSV 时，字段里成对出现的双引号被吃掉了一个。`parse_line('"say ""hi""",x')` 应该得到 `['say "hi"', 'x']`。
+expected_failure_modes: []
+hidden_tests: tests/test_hidden.py
+graders:
+  - name: OutcomeGrader
+    config:
+      timeout_s: 180.0
+  - name: FailureClassifier
+    config:
+      expected_modes: []

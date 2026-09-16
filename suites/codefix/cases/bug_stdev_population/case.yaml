@@ -1,0 +1,20 @@
+# bug_stdev_population —— 由 scripts/build_cases.py 生成，不要手改。
+#
+# 改题面/补丁/隐藏测试请改那个脚本里的数据表，然后重跑它
+# （它会重新生成并**逐条验证可解性**）。
+case_id: bug_stdev_population
+tier: medium
+tags: [docstring-driven, statistics]
+task:
+  case_id: bug_stdev_population
+  prompt: |
+      标准差的口径不对。仓库 docstring 约定默认用**样本**口径（除以 n-1），但现在 `sample=True` 和 `sample=False` 结果一样。
+expected_failure_modes: []
+hidden_tests: tests/test_hidden.py
+graders:
+  - name: OutcomeGrader
+    config:
+      timeout_s: 180.0
+  - name: FailureClassifier
+    config:
+      expected_modes: []

@@ -1,0 +1,20 @@
+# bug_crlf_not_stripped —— 由 scripts/build_cases.py 生成，不要手改。
+#
+# 改题面/补丁/隐藏测试请改那个脚本里的数据表，然后重跑它
+# （它会重新生成并**逐条验证可解性**）。
+case_id: bug_crlf_not_stripped
+tier: medium
+tags: [cross-module, parsing, windows]
+task:
+  case_id: bug_crlf_not_stripped
+  prompt: |
+      从 Windows 导出的 CSV（CRLF 换行）解析后，每行最后一个字段的值带着一个多余的 `\r`，导致数值推断失败。
+expected_failure_modes: []
+hidden_tests: tests/test_hidden.py
+graders:
+  - name: OutcomeGrader
+    config:
+      timeout_s: 180.0
+  - name: FailureClassifier
+    config:
+      expected_modes: []

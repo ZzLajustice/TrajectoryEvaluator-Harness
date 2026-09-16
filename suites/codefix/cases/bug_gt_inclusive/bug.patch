@@ -1,0 +1,13 @@
+diff --git a/csvlite/table.py b/csvlite/table.py
+index 2e27088..2ecdb24 100644
+--- a/csvlite/table.py
++++ b/csvlite/table.py
+@@ -84,7 +84,7 @@ class Table:
+         "超过阈值"这类口径整体偏移一格，而结果看起来仍然合理。
+         """
+         self._require(column)
+-        return self.where(lambda row: _as_number(row[column]) > value)
++        return self.where(lambda row: _as_number(row[column]) >= value)
+ 
+     def lt(self, column: str, value: float) -> Table:
+         """保留 `column` **严格小于** `value` 的行。"""

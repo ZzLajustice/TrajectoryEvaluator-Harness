@@ -22,6 +22,36 @@ from typing import Any
 
 from harness.contracts.spec import WorkspaceSpec
 
+# ---- 工作目录的落地布局 ----
+#
+# ## 为什么这些常量住在 `core/workspace.py` 而不是 `store/layout.py`
+#
+# `store/layout.py` 放的是 **runs/ 目录**的布局（快照名、索引名），
+# 因为报告层要读它们却不许 import 组装层。而工作目录的布局有两个使用者：
+# `core.workspace`（要在这里建目录）与 `orchestration.deps`（结果级评测要在
+# 目录外部重新指向同一处）。两者都能看见 `core`，**但 core 看不见 store**
+# （层级表：store 在 core 之上）—— 所以这里才是它该待的地方。
+# 放错层的表现是 `lint-imports` 直接红，不会静默。
+#
+# 写成两处字面量的话，改一处漏一处时结果级评测会去一个**空目录**里跑
+# 隐藏测试并拿到"全部通过" —— 那比报错危险得多。
+
+
+def workspace_root(workdir: Path | str, *, case_id: str, run_id: str) -> Path:
+    """SUT 工作目录的落地路径：`<workdir>/<case_id>/<run_id>`。"""
+    return Path(workdir) / case_id / run_id
+
+
+#: 隐藏验收测试在工作目录内的落地目录。
+#: 以 `_` 开头是为了在 `ls` 里一眼看出它不是这个项目的一部分。
+HIDDEN_DIR = "_hidden"
+
+#: 隐藏验收测试在工作目录内的固定文件名。
+HIDDEN_TEST_NAME = "test_hidden.py"
+
+#: 隐藏测试在工作目录内的相对路径 —— 也是 `run_command` 的 argv 里用的那个。
+HIDDEN_TEST_RELPATH = f"{HIDDEN_DIR}/{HIDDEN_TEST_NAME}"
+
 
 class Workspace:
     def __init__(
@@ -35,7 +65,8 @@ class Workspace:
     ) -> None:
         self.spec = spec
         self.executor = executor
-        self.root = Path(workdir) / case_id / run_id
+        # 路径算法见本模块顶部的 workspace_root —— 结果级评测要在目录外指向同一处
+        self.root = workspace_root(workdir, case_id=case_id, run_id=run_id)
         self.keep = spec.keep
         self.keep_on_failure = spec.keep_on_failure
 
@@ -53,6 +84,13 @@ class Workspace:
             await asyncio.to_thread(shutil.copytree, self.spec.source, self.root)
         else:
             await asyncio.to_thread(self.root.mkdir, parents=True, exist_ok=True)
+
+        # overlay 在 patch **之前**：它是场景布置，补丁是针对场景的改动。
+        # 顺序反过来的话，补丁会打在缺文件的树上 —— 而 `git apply` 的失败
+        # 信息（"没有这个文件"）看起来像补丁本身坏了。
+        if self.spec.overlay:
+            await asyncio.to_thread(
+                shutil.copytree, self.spec.overlay, self.root, dirs_exist_ok=True)
 
         if self.spec.patch:
             await self._apply_patch(Path(self.spec.patch))
