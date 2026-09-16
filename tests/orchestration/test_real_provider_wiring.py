@@ -124,7 +124,7 @@ def test_model_flag_overrides_the_suite_default():
     from harness.orchestration.suite import load_suite as load
 
     suite = load(DEEPSEEK)
-    assert suite.defaults.model.model == "deepseek-v4-flash"
+    assert suite.defaults.model.model == "deepseek-flash"
     # 走 CLI 的覆盖逻辑（不实际运行）
     suite.defaults.model = suite.defaults.model.model_copy(
         update={"model": "deepseek-v4-pro"})

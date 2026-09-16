@@ -15,22 +15,26 @@
 #
 # ## 成本
 #
-# SUT 便宜模型 + judge 强模型，1 条 case + judge_repeat 2。
-# 比 smoke 贵，但比全量便宜得多。**跑之前想清楚**：成本上限是失效的。
+# SUT 与 judge **都用 flash 档**（按使用者要求统一），1 条 case + judge_repeat 2。
+#
+# 设计上本来是 SUT 用便宜、judge 用强（deepseek-v4-pro）。统一成 flash 的
+# 代价是判官可能判得更糙；收益是成本可控、且**两档价格的差异可以直接对比**。
+# 要换回强模型：把下面的 judge.model 改成 deepseek-v4-pro。
 name: judged-deepseek
 version: "1"
 
 defaults:
   # SUT 用便宜档
-  model: {provider: deepseek, model: deepseek-v4-flash}
+  model: {provider: deepseek, model: deepseek-flash}
   budget: {max_turns: 6, max_wall_clock_s: 180.0}
   system_prompt: "You are a careful coding agent. Use the tools to fix the problem."
   middlewares: [permission, sandbox, budget, telemetry]
   concurrency: 1
 
   judge:
-    # judge 用强档 —— 设计上如此：SUT 用便宜模型造失败样本，judge 要判得准
-    model: deepseek-v4-pro
+    # 与 SUT 同档。要试"强模型判官"就改成 deepseek-v4-pro（价格在
+    # contracts/pricing.py 里有，贵 3~4 倍）
+    model: deepseek-flash
     provider: deepseek
     rubric: |
       Judge whether the agent completed the task: create pong.txt containing

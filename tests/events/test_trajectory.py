@@ -8,9 +8,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from harness.events.trajectory import Trajectory
 from harness.events.types import (
     EventType,
+    LLMResponseEvent,
     RunEndEvent,
     RunStartEvent,
     ToolCallEvent,
@@ -98,3 +101,35 @@ def test_of_filters_by_event_type():
 
 def test_run_id_is_preserved():
     assert _traj().run_id == "r1"
+
+
+def test_cost_usd_sums_responses_and_ignores_the_run_end_total():
+    """★ `run.end.cost_usd` 是**累计值**而不是增量 —— 遍历事件求和会翻倍。
+
+    `Trajectory.cost_usd` 只累加 `llm.response`。这条测试防的正是
+    "把所有事件的 cost_usd 加起来"那种写法：结果会正好是真实成本的 2 倍，
+    而 2 倍看起来仍像个合理数字，不会有人一眼认出。
+
+    实测踩的：我用那种脚本核对轨迹与索引，得到 $0.00059266 对 $0.00029633，
+    一度把它当成了 harness 的 bug。**索引才是对的。**
+    """
+    per_call = 0.0001
+    t = Trajectory.from_events("r1", [
+        RunStartEvent(run_id="r1", seq=0, type=EventType.RUN_START,
+                      role="sut", model="deepseek-flash", provider="deepseek"),
+        LLMResponseEvent(run_id="r1", seq=1, type=EventType.LLM_RESPONSE,
+                         turn=0, model="deepseek-flash",
+                         input_tokens=100, cost_usd=per_call),
+        LLMResponseEvent(run_id="r1", seq=2, type=EventType.LLM_RESPONSE,
+                         turn=1, model="deepseek-flash",
+                         input_tokens=200, cost_usd=per_call),
+        RunEndEvent(run_id="r1", seq=3, type=EventType.RUN_END, status="ok",
+                    input_tokens=300, cost_usd=2 * per_call),
+    ])
+    assert t.cost_usd == pytest.approx(2 * per_call)
+    # run.end 记的是同一个数的累计形式：两者相等，但**相加就翻倍**
+    end = t.end()
+    assert end is not None
+    assert end.cost_usd == pytest.approx(t.cost_usd)
+    # token 同理：只累加 llm.response，run.end 的 input_tokens 不参与
+    assert t.input_tokens == 300

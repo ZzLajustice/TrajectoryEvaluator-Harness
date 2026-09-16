@@ -19,7 +19,7 @@
 # ## ⚠️ 模型名会过时
 #
 # `deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 弃用，
-# 对应非思考/思考模式的新名字是 `deepseek-v4-flash` / `deepseek-v4-pro`。
+# 对应非思考/思考模式的新名字是 `deepseek-flash` / `deepseek-v4-pro`。
 # 我这边的信息来自公开文档的检索结果，**跑之前请对一下厂商当前文档** ——
 # 名字不对会得到 "Model Not Found"，那至少是个清楚的错。
 # 换名字不必改这个文件：`--model` 可以直接覆盖。
@@ -28,7 +28,7 @@ version: "1"
 
 defaults:
   # provider 名会决定找哪个 key：deepseek → DEEPSEEK_API_KEY
-  model: {provider: deepseek, model: deepseek-v4-flash}
+  model: {provider: deepseek, model: deepseek-flash}
   budget:
     max_turns: 6
     # 真模型要花钱 —— 单条 case 的硬上限，跑飞了也会自己停

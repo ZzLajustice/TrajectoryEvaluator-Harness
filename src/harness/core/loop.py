@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from harness.contracts.pricing import with_cost
 from harness.contracts.protocols import LLMRequest, Message
 from harness.contracts.spec import RunStatus
 from harness.core.budget import BudgetExceeded
@@ -77,6 +78,16 @@ async def agent_loop(ctx: RunContext) -> RunStatus:
             ))
             return RunStatus.LLM_ERROR
 
+        # ★ 成本**先算一次**，事件与计费共用同一个数。
+        #
+        # 曾经的写法是事件里记 `resp.usage.cost_usd`（provider 只搬 token，
+        # 所以是 0），只给 governor 补成本。后果是**轨迹说这次调用免费**，
+        # 而报告里的钱来自 `RunResult.usage` —— 两处不一致，且以错的那处为准
+        # （轨迹是真相源）。实测踩的：索引里 $0.000067，事件里 0.0。
+        #
+        # provider 只搬 token（它不该认识价格表），换算在 L0 的 pricing。
+        usage = with_cost(resp.usage, resp.model)
+
         ctx.emit(LLMResponseEvent(
             run_id=ctx.run_id, seq=ctx.next_seq(), type=EventType.LLM_RESPONSE,
             turn=turn, model=resp.model, content=resp.content, text=resp.text,
@@ -85,14 +96,14 @@ async def agent_loop(ctx: RunContext) -> RunStatus:
                 for c in resp.tool_calls
             ],
             finish_reason=resp.finish_reason,
-            input_tokens=resp.usage.input_tokens,
-            output_tokens=resp.usage.output_tokens,
-            cost_usd=resp.usage.cost_usd,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cost_usd=usage.cost_usd,
             latency_ms=resp.latency_ms,
             raw=resp.raw,
         ))
         try:
-            ctx.governor.charge_usage(resp.usage)
+            ctx.governor.charge_usage(usage)
         except BudgetExceeded:
             # 用量超限同样是**独立终态** —— 不是 LLM 错误
             return RunStatus.BUDGET_EXCEEDED

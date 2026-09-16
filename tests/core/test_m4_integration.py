@@ -328,3 +328,53 @@ async def test_telemetry_is_auto_injected_when_caller_forgets(tmp_path):
     p = FakeProvider([tool_call_response("finish", {"summary": "d"}, call_id="c1")])
     result = await Run(_spec(), _deps(p, tmp_path, middlewares=())).execute()
     assert len(result.trajectory.tool_results()) == 1
+
+
+async def test_cost_is_recorded_in_the_trajectory_not_only_in_the_budget(tmp_path):
+    """★ 轨迹是**真相源** —— 它记的成本必须与报告里的一致。
+
+    曾经的写法是：事件里记 provider 搬来的 `cost_usd`（provider 只搬 token，
+    所以恒为 0），只给 governor 补上真成本。后果是**轨迹说这次调用免费**，
+    而索引/报告里的钱来自 `RunResult.usage` —— 两处不一致，
+    且读轨迹的人会以错的那处为准。
+
+    实测踩的：同一次 run，索引里 $0.000067，事件里 0.0。
+    """
+    class _PricedProvider:
+        """报真实模型名与真实量级 token 的 provider。"""
+
+        name = "priced"
+
+        async def complete(self, req: Any) -> Any:
+            from harness.contracts.protocols import LLMResponse
+            from harness.contracts.results import Usage
+
+            return LLMResponse(
+                model="deepseek-flash",
+                content=[{"type": "text", "text": "done"}],
+                text="done", tool_calls=[], finish_reason="stop",
+                usage=Usage(input_tokens=1_000_000, output_tokens=1_000_000),
+                latency_ms=1,
+            )
+
+    result = await Run(_spec(), _deps(_PricedProvider(), tmp_path)).execute()
+
+    response = next(e for e in result.trajectory.events
+                    if e.type is EventType.LLM_RESPONSE)
+    # `cost_usd` 是可选的（老轨迹里可能没有），`or 0.0` 顺带把 None 也纳入断言
+    cost = response.cost_usd or 0.0
+    assert cost > 0, "轨迹里的成本必须是真的，不能是 0"
+    # 与 RunResult（报告读的那份）一致 —— 两处同源
+    assert cost == pytest.approx(result.usage.cost_usd, rel=1e-9)
+
+
+async def test_a_fake_provider_records_zero_cost_without_warning(tmp_path):
+    """假 provider 不产生成本，也不该触发"价格未知"的警告。"""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        result = await Run(_spec(), _deps(
+            FakeProvider([tool_call_response("finish", {"summary": "d"}, call_id="c1")]),
+            tmp_path)).execute()
+    assert result.usage.cost_usd == 0.0

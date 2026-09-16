@@ -20,9 +20,13 @@ def usage_from_openai(raw: dict[str, Any] | None) -> Usage:
     if not raw:
         return Usage()
     details = raw.get("prompt_tokens_details") or {}
+    # `cached_tokens` 是 OpenAI 的写法；DeepSeek 另外提供
+    # `prompt_cache_hit_tokens`。两个都读 —— 漏掉后者会让缓存命中算成未命中，
+    # 而两者价差 50 倍，长对话的成本会被严重高估。
+    cached = details.get("cached_tokens") or raw.get("prompt_cache_hit_tokens") or 0
     return Usage(
         input_tokens=int(raw.get("prompt_tokens") or 0),
         output_tokens=int(raw.get("completion_tokens") or 0),
-        cache_read_tokens=int(details.get("cached_tokens") or 0),
+        cache_read_tokens=int(cached),
         calls=1,
     )
