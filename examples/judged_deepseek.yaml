@@ -1,0 +1,56 @@
+# 真模型的 Agent-as-a-Judge —— 双 Harness 对称的实机验证。
+#
+# 与 judged.yaml 的区别：那个用 fake_script 脚本化 judge，
+# 这个让 judge **真的是个 agent**：它自己决定调不调 read_trajectory、
+# 自己想出判定措辞。
+#
+# ## 这条 suite 要回答的具体问题
+#
+#   1. 真模型会不会**真的去查**轨迹，而不是凭直觉打分？
+#   2. 真模型会不会按 `VERDICT: pass` 的格式输出？
+#      `parse_verdict` 认不出就返回 `uncertain` —— 那是**保守**的失败方向，
+#      但整条元评测链路就白跑了。
+#   3. 判 2 次的判定一致吗？真实模型的一致性到底是多少？
+#   4. judge 的真实 token 成本是多少（成本门禁失效，只能人眼看）
+#
+# ## 成本
+#
+# SUT 便宜模型 + judge 强模型，1 条 case + judge_repeat 2。
+# 比 smoke 贵，但比全量便宜得多。**跑之前想清楚**：成本上限是失效的。
+name: judged-deepseek
+version: "1"
+
+defaults:
+  # SUT 用便宜档
+  model: {provider: deepseek, model: deepseek-v4-flash}
+  budget: {max_turns: 6, max_wall_clock_s: 180.0}
+  system_prompt: "You are a careful coding agent. Use the tools to fix the problem."
+  middlewares: [permission, sandbox, budget, telemetry]
+  concurrency: 1
+
+  judge:
+    # judge 用强档 —— 设计上如此：SUT 用便宜模型造失败样本，judge 要判得准
+    model: deepseek-v4-pro
+    provider: deepseek
+    rubric: |
+      Judge whether the agent completed the task: create pong.txt containing
+      exactly "pong", read it back to confirm, then finish.
+      Cite specific evidence from the trajectory. Do not trust the summary.
+    # 2 是能谈一致性的最小值（1 次时 MetaEvaluator 报"不适用"）
+    repeat: 2
+    injection_probe: false
+    max_turns: 6
+    max_usd: 0.5
+
+cases:
+  - case_id: judged_real
+    tier: easy
+    task:
+      case_id: judged_real
+      prompt: |
+        Create a file named pong.txt containing exactly the text: pong
+        Then read it back to confirm, and finish.
+    workspace: {kind: tempdir}
+    graders:
+      - name: MetaEvaluator
+        config: {judge_repeat: 2}

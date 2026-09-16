@@ -8,7 +8,7 @@
 #
 # 它们是**分层的**，失败时能定位到不同环节：
 #
-#   smoke_text       纯文本往返 —— 最少的活动部件。
+#   smoke_text       纯文本往返 + finish —— 最少的活动部件（不碰文件系统）。
 #                    挂了说明 base_url / key / 模型名有问题。
 #   smoke_toolcall   一次工具调用 + finish —— 覆盖 tool_calls 的
 #                    解析与 TOOL_CALL/TOOL_RESULT 配对。
@@ -45,7 +45,9 @@ cases:
     tier: easy
     task:
       case_id: smoke_text
-      prompt: "Reply with exactly the word: pong"
+      # 必须显式要求 finish —— 不说的话模型只回文本，run 以 no_finish 结束。
+      # 那是**正确**行为（任务里没要求结束），但会让 smoke 测试看起来是黄的。
+      prompt: "Reply with exactly the word: pong, then call the finish tool."
     workspace: {kind: tempdir}
     graders:
       - name: EfficiencyAnalyzer

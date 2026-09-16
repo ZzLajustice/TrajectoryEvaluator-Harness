@@ -314,11 +314,50 @@ class RunBuilder:
             )
 
         outcomes = [outcome for _, outcome in results]
+        self._warn_if_cost_cap_is_inert(outcomes, max_cost,
+                                        suite.defaults.model.provider)
         # 落 case 级快照 —— diff / ci / report 都从它读。
         # 在 run_suite 里写而不是让 CLI 记得写：忘了写的话 diff 会安静地
         # 拿一份过期的基线去比，而那看起来像"没有回归"。
         self._write_snapshot(outcomes, suite)
         return outcomes
+
+    def _warn_if_cost_cap_is_inert(
+        self, outcomes: list[RunOutcome], max_cost: float | None, provider: str
+    ) -> None:
+        """真模型 + 设了成本上限 + 全部报 0 成本 → 明说这个上限没生效。
+
+        ## 为什么必须吵一声
+
+        厂商价格表没实现，所以 `Usage.cost_usd` 对真实模型恒为 0。
+        后果是 `--max-cost` 与 `Budget.max_usd` **都是失效的** ——
+        但它们看起来像在保护你，这是最坏的一种安全机制。
+
+        ## 为什么必须区分 fake
+
+        `FakeProvider` 也报 token（15/次）也报 0 成本 —— 但**没有花任何钱**，
+        警告它纯属误报。而一个会误报的警告等于没有警告：
+        看多了就学会了忽略。
+
+        初版就是按"tokens > 0 且 cost == 0"判的，于是三条 fake 用例的测试
+        全被它刷了一遍。判据必须是**真的有外部花费**，那就要看 provider 是不是真的。
+        """
+        if max_cost is None or is_fake(provider):
+            return
+        tokens = sum(o.result.usage.input_tokens + o.result.usage.output_tokens
+                     for o in outcomes)
+        spent = sum(o.result.usage.cost_usd for o in outcomes)
+        if tokens > 0 and spent == 0.0:
+            import warnings
+
+            warnings.warn(
+                f"cost cap {max_cost} could not be enforced: {tokens} tokens were "
+                "spent but every run reported cost_usd=0. There is no vendor price "
+                "table, so Usage.cost_usd is always 0 for real models and both "
+                "--max-cost and Budget.max_usd are inert. See docs/known-gaps.md.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     def _write_snapshot(self, outcomes: list[RunOutcome], suite: Suite) -> None:
         cases = to_case_outcomes(outcomes)

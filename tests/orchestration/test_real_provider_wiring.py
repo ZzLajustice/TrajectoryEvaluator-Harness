@@ -174,3 +174,56 @@ def test_env_file_is_gitignored():
     ignored = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
     assert ".env" in ignored.split()
     assert (REPO_ROOT / ".env.example").exists(), "要给一个可提交的模板"
+
+
+# ---- 成本门禁失效时必须吵，但**不能误报** ----
+def test_inert_cost_cap_warning_does_not_fire_for_fake_providers():
+    """★ 假 provider 也报 token、也报 0 成本，但**没花任何钱**。
+
+    按"tokens>0 且 cost==0"判的话，每条 fake 用例都会触发这条警告 ——
+    而一个会误报的警告等于没有警告：看多了就学会忽略。
+    判据必须是"真的有外部花费"，所以要看 provider 是不是真的。
+
+    （初版就是这么写的，三条 e2e 用例的测试全被它刷过一遍。）
+    """
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        outcomes = RunBuilder(out_dir=Path("runs")).run_suite_sync(
+            HELLO, max_cost=1.0)
+    assert outcomes  # 走到这里就说明没有警告
+
+
+def test_inert_cost_cap_warning_fires_for_a_real_provider(monkeypatch, tmp_path):
+    """真 provider + 有 token + cost 恒 0 → 必须吵。
+
+    这条不真的打网络：直接调那个方法，喂一个真实 provider 名的 outcomes。
+    """
+    from harness.contracts.results import Usage
+    from harness.contracts.spec import RunStatus
+    from harness.core.run import RunResult
+    from harness.events.trajectory import Trajectory
+    from harness.orchestration.deps import RunOutcome
+
+    def _outcome() -> RunOutcome:
+        traj = Trajectory.from_events("r1", [])
+        return RunOutcome(result=RunResult(
+            run_id="r1", status=RunStatus.OK, final_output=None, trajectory=traj,
+            usage=Usage(input_tokens=700, output_tokens=100, cost_usd=0.0),
+            turns=1, tool_calls=1, duration_s=0.1), case_id="c")
+
+    builder = RunBuilder(out_dir=tmp_path)
+    with pytest.raises(RuntimeWarning, match="could not be enforced"):
+        with __import__("warnings").catch_warnings():
+            __import__("warnings").simplefilter("error", RuntimeWarning)
+            builder._warn_if_cost_cap_is_inert([_outcome()], 0.5, "deepseek")
+
+
+def test_no_warning_when_no_cost_cap_is_set():
+    """没设上限就没什么好警告的。"""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        RunBuilder(out_dir=Path("runs")).run_suite_sync(HELLO)

@@ -10,51 +10,65 @@
 
 ## 1. 没有验证的事
 
-### 1.1 真模型：传输链路已验证，**成功响应未验证** ⚠️ 最高风险
+### 1.1 真模型：**读路径已验证**（2026-09-16 实跑）
 
-**接线已经补完**（`credentials.py` + `_build_provider` 分派 + `--model/--provider`），
-并用一个**故意无效的 key** 打了一次真实请求。返回：
+`examples/deepseek.yaml` 两条 case 对着 `api.deepseek.com` 实跑通过：
 
-```
-error_type: AuthenticationError
-message: Error code: 401 - {'error': {'message':
-         'Authentication Fails, Your api key: ****test is invalid', ...}}
-```
-
-这一次往返**证实了四件事**：
-
-| 被证实的 | 为什么这个证据成立 |
+| 验证到的 | 证据 |
 |---|---|
-| DNS / TLS / 端点路径正确 | `https://api.deepseek.com` 真的响应了 |
-| 请求体形状被接受 | 否则是 400 而不是 401 |
-| `Authorization` 头真的发出去了 | 服务端回显了假 key 的后四位 `****test` |
-| 错误映射正确 | `error_type=AuthenticationError`、`retryable=False`、run 终态 `llm_error` |
+| 端到端 200 往返 | `smoke_text` → `ok`，1 turn / 1 tool call / 796 tokens |
+| 工具调用解析 | `smoke_toolcall` → `ok`，3 turns / 3 calls / 2675 tokens |
+| `tool_calls` 归一化 | `id → call_id`、`function.arguments`（JSON **字符串**）被正确解析成 dict |
+| 沙箱真实往返 | `write_file` 写 4 字符 → `read_file` 读回 `'pong'` |
+| token 计费字段映射 | `prompt_tokens → input_tokens`、`completion_tokens → output_tokens` |
+| `raw` 完整保留 | 真实响应体原样入轨迹（replay 无损性的前提成立） |
+| 三个评测器对真实轨迹可用 | TrajectoryMatcher / EfficiencyAnalyzer / GroundingChecker 全 PASS |
+| 真模型下的并发 | `concurrency=2` 两条 case 并行，各自用量独立入索引 |
+| 错误映射 | 用假 key 得到 `401 → AuthenticationError → llm_error`，`retryable=False` |
 
-**仍然没验证的**（都需要一个**有效的** key）：
+`_from_payload` 从没见过真实响应体，**一次就对**。
+
+#### 真模型的 Agent-as-a-Judge（同日实跑）
+
+`examples/judged_deepseek.yaml`：SUT = `deepseek-v4-flash`，
+judge = `deepseek-v4-pro`，判 2 次。结果 `judged_real → ok`，
+`judge consistency 100% over 2 verdict(s)`。
+
+**这条跑通了三件在 fake provider 下无法验证的事**：
+
+| 命题 | 证据 |
+|---|---|
+| 真模型会**真的去查**轨迹 | judge 两次都调了 `read_trajectory` **和** `read_file` |
+| 真模型按约定的格式输出判定 | 两次都是 `VERDICT: pass` 开头，`parse_verdict` 正确解析 |
+| 判定**引用了工具返回原文** | 判词里有 `event 4: write_file({...'content': 'pong'})` 与 `"wrote 4 chars to pong.txt"` |
+
+第三条同时验证了 M9 那个修复：**`read_trajectory` 必须渲染工具输出内容** ——
+不渲染的话判官引不出 `"wrote 4 chars to pong.txt"` 这句话，
+就只能说"看起来做了"，而那正是 Agent-as-a-Judge 要避免的。
+
+**量化发现：judge 比 SUT 贵 2.9 倍。** 同一轮里 SUT 2650 tokens、
+两次判定 7576 tokens（3553 + 4023）。这把设计决策
+"judge 用强模型" 从一句话变成了一个数字，也说明 `judge_cost` 指标
+为什么必须与 sut 的 cost 严格分列 —— 混在一起就看不出来评测本身有多贵。
+
+**仍然没验证的**：
 
 | 路径 | 现状 |
 |---|---|
-| **200 响应的解析** | `_from_payload` 的字段映射从未见过真实响应体 |
-| 真实模型的工具调用格式 | `tool_calls` 的结构、参数是否被包成字符串、并行调用 |
-| 真实 token 用量与计费 | `Usage` 能否被真实响应填满；`cost_usd` 目前恒为 0（无价目表） |
-| `--record` / `--replay` 对真实响应 | 只在 fake 上验证过 |
-| 上下文压缩的真实触发 | `CONTEXT_COMPACT` 阈值在真实 token 计数下是否合理 |
+| `--record` / `--replay` 对真实响应 | 只在 fake 上验证过。现在有真 key，可补 |
+| 限流 / 重试 / 长上下文 | 没遇到 429、没跑过大到触发 `CONTEXT_COMPACT` 的轨迹 |
+| 多轮工具调用 | 最多跑到 3 次调用，没测过十几轮的场景 |
+| 并行工具调用 | 模型三次都只发一个 `tool_call`，没触发并行分支 |
+| **judge 的判定准不准** | 这次两个判定都说 pass，而 SUT 确实做对了 —— 但这是**一轮**。要谈准确率需要带 ground-truth 标签的用例集（M11） |
+| **judge 模型的 CLI 覆盖** | `--model/--provider` 只覆盖 SUT；judge 的模型只能在 suite 里改 |
+| **成本** | 见 §2.5 —— `cost_usd` 恒为 0，**成本门禁是失效的** |
 
-**影响**：M3 的验收判据"真模型自动修掉 toyrepo 的 bug"仍未达成。
-现在的状态是"M3 的代码路径已实现、传输链路已证实、但成功路径未跑过"。
+**影响**：M3 的验收判据"真模型自动修掉 toyrepo 的 bug"仍**未**达成 ——
+它需要 toyrepo 用例集（M11），而 `smoke_toolcall` 只是写读一个文件。
+但"真模型能不能跑"这件事本身，现在是**有证据的**了。
 
-**怎么补**：`cp .env.example .env` 填上 key，然后
-
-```bash
-uv run harness run -s examples/deepseek.yaml --evaluate
-```
-
-`deepseek.yaml` 的两条 case 是**分层**的：`smoke_text` 只测纯文本往返，
-`smoke_toolcall` 加一次工具调用 —— 挂了能定位到不同环节。
-
-**⚠️ 模型名**：`deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 弃用，
-现行名字是 `deepseek-v4-flash` / `deepseek-v4-pro`（信息来自公开文档检索，
-跑之前请对一下厂商当前文档）。名字不对会得到 "Model Not Found"，那至少是清楚的错。
+**⚠️ 模型名**：`deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 弃用。
+实跑用的是 `deepseek-v4-flash`，厂商接受了这个名字。
 
 ### 1.2 HTML 报告的图表从未在浏览器里打开过
 
@@ -135,7 +149,47 @@ judge 有自己的沙箱，与 SUT 的 workspace 是两回事，
 `runs/latest.json` 每次 run 都覆盖。做 baseline 对比需要**手动复制**。
 `harness diff` 因此只能比"当前 vs 手动存的基线"。
 
-### 2.5 其它
+### 2.5 成本门禁**失效**（真模型下）⚠️ 实跑发现
+
+`Usage.cost_usd` 对真实模型**恒为 0** —— 没有厂商价格表，provider 只搬 token 数。
+
+后果是 `--max-cost` 与 `Budget.max_usd` **都不会触发**。
+而它们看起来像在保护你：`max_usd: 0.10` 写在 suite 里，
+读的人会以为单条 case 最多花一毛钱。**一个静默失效的安全机制比没有更糟。**
+
+**已做的补救**：设了 `--max-cost` 而实际花了 token 却报 0 成本时，
+`RunBuilder` 会发一条 `RuntimeWarning` 明说"这个上限没能生效"。
+把静默的洞变成吵闹的洞。
+
+**没做的**：真正的价格表。**我不打算凭记忆写厂商价格** ——
+价格会变，写错的价格比 0 更危险（它会给出一个看起来合理的错误数字）。
+建议的实现是**可配置**的价目表（suite 或环境变量），而不是硬编码：
+
+```yaml
+# 设想形态
+pricing:
+  deepseek-v4-flash: {input_per_1m: 0.28, output_per_1m: 0.42}
+```
+
+### 2.6 模型的推理内容没有被任何评测器使用
+
+`raw.choices[0].message.reasoning_content` 里是模型的推理轨迹，
+**完整保留在轨迹里**（`raw` 字段），所以不算数据丢失 ——
+按项目自己的规约（"加字段前先自问能否从已有事件派生"），
+不另开字段是**对的**。
+
+但**没有任何评测器读它**。对一个**过程级**评测平台来说，
+推理轨迹可能是最有价值的过程信号：它直接暴露"模型是不是在瞎猜"、
+"它有没有真的读工具输出"。现在的评测器全都在看工具调用序列，
+看不到模型的思路。
+
+实跑数据：`smoke_text` 一次响应 `completion_tokens=110` 里有
+`reasoning_tokens=107` —— 也就是说**输出 token 的 97% 花在推理上**，
+而 `text` 只有 `'pong'`。只看 `text` 的话，这条轨迹里模型的努力完全不可见。
+
+**这是特性缺口，不是 bug** —— 记在这里是因为"过程级"三个字要求它。
+
+### 2.7 其它
 
 - `CaseOutcome.golden_score` 硬编码只取 `TrajectoryMatcher` 的分
 - `sqlite` 读路径的 IO 锁是**绊线而非证明**（见 `tests/store/test_sqlite.py`
