@@ -22,6 +22,8 @@ import pytest
 
 from harness.contracts.spec import RunStatus
 from harness.orchestration.aggregator import (
+    CASE_FLAKY,
+    CASE_OK,
     CaseOutcome,
     aggregate,
     read_snapshot,
@@ -239,3 +241,87 @@ def test_snapshot_is_valid_json_with_utf8_names(tmp_path):
     raw = path.read_text(encoding="utf-8")
     assert "中文用例" in raw, "中文不该被转义成 \\uXXXX"
     assert json.loads(raw)["suite_name"] == "中文套件"
+
+
+# ---- 通过率的基准：结果级优先于 run 终态 ----
+def _with_outcome(case_id: str, status: RunStatus, outcome: str,
+                  *, repeat: int = 0):
+    """一条带 `OutcomeGrader` 结果的 run。`outcome` 取 pass/fail/skipped/error。"""
+    from harness.contracts.results import EvalResult, EvalStatus, Usage
+    from harness.core.run import RunResult
+    from harness.events.trajectory import Trajectory
+    from harness.orchestration.deps import RunOutcome
+
+    traj = Trajectory.from_events(f"r{repeat}", [])
+    result = RunResult(run_id=f"r{repeat}", status=status, final_output=None,
+                       trajectory=traj, usage=Usage(), turns=2, tool_calls=3,
+                       duration_s=0.1)
+    evals = [EvalResult(evaluator="OutcomeGrader", run_id=f"r{repeat}",
+                        status=EvalStatus(outcome), score=None)]
+    return RunOutcome(result=result, evals=evals, case_id=case_id,
+                      repeat_index=repeat)
+
+
+def test_outcome_wins_over_the_run_terminal_state():
+    """★ 这条盯的是一个真实误报过的数字。
+
+    真模型跑 17 条用例：`OutcomeGrader` 说 12 条修好了，而按 run 终态只有 4 条
+    （模型修完 bug 就继续干活直到轮次耗尽，从不调 finish）。
+    按终态算出来的 `pass_rate` 是 0.235，按结果算才是 0.706。
+
+    只看终态等于把"agent 没说收工"记成"没修好" —— 而设计文档写着
+    outcome 永远是主判据。
+    """
+    cases = to_case_outcomes([
+        _with_outcome("a", RunStatus.MAX_TURNS, "pass"),   # 修好了但没调 finish
+    ])
+    assert cases[0].pass_rate == 1.0
+    assert cases[0].pass_basis == "outcome"
+    assert cases[0].case_status == CASE_OK
+
+
+def test_run_status_is_still_the_fallback_without_an_outcome_grader():
+    """没有结果级评测器的 suite（如 `examples/traps.yaml`）照旧按终态算。"""
+    cases = to_case_outcomes([_run_outcome("a", RunStatus.MAX_TURNS)])
+    assert cases[0].pass_rate == 0.0
+    assert cases[0].pass_basis == "run_status"
+
+
+@pytest.mark.parametrize("state", ["skipped", "error"])
+def test_unjudgeable_outcomes_are_excluded_not_counted_as_failures(state):
+    """★ "判不了"与"没通过"是两回事。
+
+    SKIPPED（没配结果级评测器）与 ERROR（用例本身坏了）都算判不了。
+    把它们计成失败会让 pass_rate 虚低 —— 而虚低的通过率会把真失败淹没。
+    """
+    cases = to_case_outcomes([_with_outcome("a", RunStatus.OK, state)])
+    assert cases[0].outcome_flags == [None]
+    # 判不了 → 退回 run 终态（OK → 通过），而不是记成失败
+    assert cases[0].pass_basis == "run_status"
+    assert cases[0].pass_rate == 1.0
+
+
+def test_status_distribution_still_reports_the_terminal_states():
+    """★ 终态没有被丢掉 —— 它只是不再冒充通过率。
+
+    "有没有正常收尾"是有价值的过程信号（12/17 的 run 都是 max_turns），
+    报告要看得见它。
+    """
+    agg = aggregate(to_case_outcomes([
+        _with_outcome("a", RunStatus.MAX_TURNS, "pass"),
+        _with_outcome("b", RunStatus.OK, "fail"),
+    ]))
+    assert agg["status_distribution"] == {"max_turns": 1, "ok": 1}
+    assert agg["pass_basis"] == "outcome"
+    assert agg["pass_rate"] == 0.5      # a 通过、b 没通过
+    assert agg["pass@k"] == 0.5
+
+
+def test_flaky_is_judged_on_the_same_basis_as_pass_rate():
+    """同一条 case 的多次 repeat 判定不一致 = flaky，无论基准是哪个。"""
+    cases = to_case_outcomes([
+        _with_outcome("a", RunStatus.OK, "pass", repeat=0),
+        _with_outcome("a", RunStatus.OK, "fail", repeat=1),
+    ])
+    assert cases[0].case_status == CASE_FLAKY
+    assert aggregate(cases)["flaky_rate"] == 1.0

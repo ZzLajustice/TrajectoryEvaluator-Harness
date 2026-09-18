@@ -34,16 +34,20 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from harness.contracts.results import EvalStatus
 from harness.contracts.spec import RunStatus
 from harness.store.snapshot import SnapshotError, read_snapshot, write_snapshot_dict
 
 # 过程分的来源。刻意只认轨迹匹配 —— 把效率分混进来会让 golden_score 语义失焦
 # （效率分的 1/step_ratio 与"是否走对了路"根本不是一回事）。
 _GOLDEN_EVALUATOR = "TrajectoryMatcher"
+
+# 结果级判定的来源。见 `CaseOutcome.comparables` 的说明。
+_OUTCOME_EVALUATOR = "OutcomeGrader"
 
 # case 级状态（diff 的三态）
 CASE_OK = "ok"
@@ -59,6 +63,11 @@ class CaseOutcome:
 
     case_id: str
     statuses: list[RunStatus]
+    #: 每次 repeat 的**结果级**判定：`True` 通过 / `False` 没通过 / `None` 判不了。
+    #:
+    #: `None` 覆盖两种"判不了"：没配结果级评测器（SKIPPED），
+    #: 以及用例本身坏了（ERROR）—— 后者绝不能算作 agent 的失败。
+    outcome_flags: list[bool | None] = field(default_factory=list)
     golden_score: float | None = None
     cost_usd: float = 0.0
     turns: int = 0
@@ -67,19 +76,52 @@ class CaseOutcome:
     spec_fingerprint: str | None = None
 
     @property
+    def comparables(self) -> list[bool]:
+        """用于算通过率的逐次判定。
+
+        ★ **结果级判定优先于 run 终态。**
+
+        设计文档写着「outcome 永远是主判据」，而这里原先只看
+        `RunStatus.OK` —— 也就是"agent 有没有调 finish"。两者实测差得离谱：
+        一次 17 条用例的真模型 run 里，`OutcomeGrader` 说 12 条修好了，
+        而按 run 终态只有 4 条 —— 因为模型修完 bug 就继续干活直到轮次耗尽，
+        从不调 finish。
+
+        于是 `pass_rate` 报 **0.235**，而真实通过率是 **0.706**。
+        读报告的人会得出"模型只能解 24%"，真相是"它解了 71%，只是没说收工"。
+        一个把"没有 outcome 判据"与"没有修好"混为一谈的指标，
+        正是本项目声称要反对的那种东西。
+
+        run 终态仍然单独保留在 `status_distribution` 里 ——
+        "它有没有正常收尾"是有价值的过程信号，只是不该冒充通过率。
+        """
+        flags = [f for f in self.outcome_flags if f is not None]
+        if flags:
+            return flags
+        return [s is RunStatus.OK for s in self.statuses]
+
+    @property
+    def pass_basis(self) -> str:
+        """这次通过率是按哪个基准算的。报告要能说出这一点。"""
+        return "outcome" if any(f is not None for f in self.outcome_flags) \
+            else "run_status"
+
+    @property
     def successes(self) -> int:
-        return sum(1 for s in self.statuses if s is RunStatus.OK)
+        return sum(1 for ok in self.comparables if ok)
 
     @property
     def pass_rate(self) -> float:
-        return self.successes / len(self.statuses) if self.statuses else 0.0
+        values = self.comparables
+        return self.successes / len(values) if values else 0.0
 
     @property
     def case_status(self) -> str:
         """Case 级三态。判据与 `flaky_rate` 用的是同一条边界。"""
-        if not self.statuses:
+        values = self.comparables
+        if not values:
             return CASE_FAIL
-        if self.successes == len(self.statuses):
+        if self.successes == len(values):
             return CASE_OK
         if self.successes == 0:
             # 稳定的失败比 flaky 好办得多 —— 混进 flaky 会掩盖真正的不确定性
@@ -93,6 +135,7 @@ def aggregate(outcomes: list[CaseOutcome]) -> dict[str, Any]:
     if n == 0:
         return {
             "cases": 0, "pass_rate": 0.0, "pass@k": 0.0, "flaky_rate": 0.0,
+            "pass_basis": "run_status",
             "flaky_cases": [], "status_distribution": {}, "total_cost_usd": 0.0,
             "total_turns": 0, "total_tool_calls": 0, "golden_score_mean": None,
             "tiers": {},
@@ -115,6 +158,10 @@ def aggregate(outcomes: list[CaseOutcome]) -> dict[str, Any]:
         "cases": n,
         "pass_rate": all_pass / n,
         "pass@k": at_least_one / n,
+        # ★ 这次通过率是按哪个基准算的。不说出来的话，
+        # 同一个数字在两份报告里可能含义不同，而读者无从分辨。
+        "pass_basis": ("outcome" if any(o.pass_basis == "outcome" for o in outcomes)
+                       else "run_status"),
         "flaky_rate": len(flaky) / n,
         "flaky_cases": flaky,
         "status_distribution": dict(status_dist),
@@ -124,6 +171,24 @@ def aggregate(outcomes: list[CaseOutcome]) -> dict[str, Any]:
         "golden_score_mean": (sum(golden) / len(golden)) if golden else None,
         "tiers": dict(Counter(o.tier for o in outcomes)),
     }
+
+
+def _outcome_flag(item: Any) -> bool | None:
+    """从一条 run 的评测结果里取"结果级判定"，取不到就是 `None`。
+
+    只认 PASS / FAIL 两种状态：`SKIPPED`（没配结果级评测器）与
+    `ERROR`（用例本身坏了）都属于**判不了**。
+
+    ★ 把它们算成"失败"会让 `pass_rate` 虚低，而虚低的通过率会让真失败
+    淹没在噪声里 —— 与 `OutcomeGrader` 内部区分三态是同一个理由。
+    """
+    for ev in item.evals:
+        if ev.evaluator != _OUTCOME_EVALUATOR:
+            continue
+        if ev.status not in (EvalStatus.PASS, EvalStatus.FAIL):
+            return None
+        return ev.status is EvalStatus.PASS
+    return None
 
 
 def to_case_outcomes(runs: list[Any]) -> list[CaseOutcome]:
@@ -148,6 +213,7 @@ def to_case_outcomes(runs: list[Any]) -> list[CaseOutcome]:
         out.append(CaseOutcome(
             case_id=case_id,
             statuses=[item.result.status for item in items],
+            outcome_flags=[_outcome_flag(item) for item in items],
             # 多次 repeat 的轨迹匹配分取均值 —— 单次命中不代表稳定命中
             golden_score=(sum(scores) / len(scores)) if scores else None,
             cost_usd=sum(item.result.usage.cost_usd for item in items),
