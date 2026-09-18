@@ -10,7 +10,9 @@
 这个 bug 的症状是"偶发、跨进程、事后才显现"，极难定位 —— 所以必须有一条
 测试直接盯住"孙进程也被杀了"。
 
-所有测试用 `sys.executable` 而非 `"python"`，避免 PATH 差异导致的假失败。
+关于解释器：**杀进程/超时类的测试**一律用 `sys.executable` 而非 `"python"`，
+避免 PATH 差异导致的假失败。而最后那一节**刻意**用裸名 `python` ——
+它测的正是"裸名启动也能跑"，见那里的说明。
 """
 
 from __future__ import annotations
@@ -118,6 +120,38 @@ async def test_env_is_inherited_and_overridable(tmp_path):
         [sys.executable, "-c", "import os; print(os.environ.get('MYVAR', 'unset'))"],
         cwd=str(tmp_path), timeout_s=30, env={"MYVAR": "v"})
     assert r.stdout.strip() == "v"
+
+
+# ---- 沙箱里的 `python` 必须真的能跑测试 ----
+#
+# 这一节盯的是一次真实事故：SUT 在沙箱里跑 `python -m pytest` 得到
+# `No module named pytest`，于是**环境问题在评测记录里写成了"模型不会修 bug"**。
+#
+# ★ 断言的是**能力**，不是"解析到哪个二进制"。后者在这台机器上做不到：
+#   `.venv\Scripts\python.exe` 是 uv 的跳板（~45 KB），靠自身路径找
+#   `pyvenv.cfg`；以裸名启动时 `argv[0]` 没有目录，跳板找不到 venv，
+#   就退化成一个没有项目包的基础解释器 —— 而 `where python` 还把它列在第一位。
+#   所以"PATH 里有没有 python"这类检查全是绿的，坏的只有实际执行。
+async def test_the_sandbox_can_run_pytest(tmp_path):
+    """★ 最直接的一条：SUT 用什么方式跑测试都得能跑通。"""
+    ex = LocalExecutor()
+    r = await ex.run_process(["python", "-m", "pytest", "--version"],
+                             cwd=str(tmp_path), timeout_s=60)
+    assert r.returncode == 0, (
+        f"the sandbox python cannot run pytest:\n{r.stdout}\n{r.stderr}")
+
+
+async def test_the_sandbox_can_import_the_project_packages(tmp_path):
+    """`pytest` 只是最常被用到的那个 —— 项目自身的包也要能导入。
+
+    少了这条，把 pytest 塞进依赖但漏掉别的（比如将来加的可选依赖）
+    会静默地只在 SUT 跑某条命令时才暴露。
+    """
+    ex = LocalExecutor()
+    r = await ex.run_process(
+        ["python", "-c", "import harness, pytest; print(harness.__file__)"],
+        cwd=str(tmp_path), timeout_s=60)
+    assert r.returncode == 0, f"{r.stdout}\n{r.stderr}"
 
 
 async def test_stdin_is_passed_through(tmp_path):

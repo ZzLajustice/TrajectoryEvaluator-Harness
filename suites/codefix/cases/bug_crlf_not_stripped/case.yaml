@@ -9,6 +9,16 @@ task:
   case_id: bug_crlf_not_stripped
   prompt: |
       从 Windows 导出的 CSV（CRLF 换行）解析后，每行最后一个字段的值带着一个多余的 `\r`，导致数值推断失败。
+# `source` 相对**仓库根**写（用例要入库，不能写死绝对路径）；
+# 加载器会把它解析成绝对路径。
+#
+# ★ 这一行漏掉的后果不是报错，而是**工作目录是空的**：
+#   没有东西可拷 → 补丁的目标文件不存在 → 而 `git apply` 在 git 仓库
+#   内部对目标不存在的补丁打出 "Skipped patch" 后**返回 0**。
+#   于是 SUT 对着空目录干活，报告上写"模型不会修 bug"。
+workspace:
+  kind: copy
+  source: examples/toyrepo
 expected_failure_modes: []
 hidden_tests: tests/test_hidden.py
 graders:

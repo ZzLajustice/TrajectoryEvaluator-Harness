@@ -242,7 +242,7 @@ class Suite(_Model):
         return case.sut.system_prompt or self.defaults.system_prompt
 
 
-def load_suite(path: Path | str) -> Suite:
+def load_suite(path: Suite | Path | str) -> Suite:
     """加载并**完整校验** suite。任何配置错误在这里抛错。
 
     接受两种形状：
@@ -260,7 +260,13 @@ def load_suite(path: Path | str) -> Suite:
 
     两种形状都走同一份 `CaseSpec` 校验 —— 这里只负责把目录拼成一个
     内存里的 suite 文档，**不放松任何校验**。
+
+    **幂等**：传入一个已经加载好的 `Suite` 会原样返回。
+    这样调用方（`RunBuilder`、测试）可以统一写 `load_suite(x)`，
+    而不必判断 x 是路径还是对象 —— 那种判断写两遍必然漂移。
     """
+    if isinstance(path, Suite):
+        return path
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"suite not found: {path}")
@@ -292,6 +298,7 @@ def _load_suite_dir(root: Path) -> Suite:
     case_files = sorted((root / "cases").glob("*/case.yaml"))
     if not case_files:
         raise SuiteConfigError(f"{root}: no cases/*/case.yaml found")
+    repo_root = _repo_root(root)
     # 目录名与 case_id 必须一致 —— 不一致时 `test_cases_are_solvable` 那样的
     # 自检脚本会去错目录找补丁，而"找不到"很容易被当成"这条没配补丁"。
     for case_file in case_files:
@@ -311,6 +318,25 @@ def _load_suite_dir(root: Path) -> Suite:
             fixture = case_file.parent / "fixture"
             if fixture.is_dir():
                 workspace.setdefault("overlay", str(fixture))
+            # ★ 三个路径都解析成**绝对路径**：`source` 相对仓库根写，
+            # `patch`/`overlay` 相对用例目录写（都是可入库的写法）。
+            #
+            # 解析成绝对的而不是留着相对的：相对的靠"进程恰好从仓库根启动"
+            # 才成立，而 `run` / `ci` / 测试都可能从别处调用。
+            # 漏掉 `source` 的后果尤其严重 —— 不是报错，而是**工作目录是空的**：
+            # 没有东西可拷 → 补丁的目标文件不存在 → 而 `git apply` 在 git 仓库
+            # 内部对目标不存在的补丁会打出 "Skipped patch" 并**返回 0**。
+            # 于是 SUT 拿到一个空目录、一路对着空气干活，
+            # 最后报告上写的是"模型不会修 bug"。
+            for key in ("source", "patch", "overlay"):
+                raw_path = workspace.get(key)
+                if not raw_path or Path(str(raw_path)).is_absolute():
+                    continue
+                # `source` 以仓库根为基准（生成器就是这么写的），
+                # `patch` / `overlay` 以用例目录为基准
+                base = repo_root if key == "source" else None
+                workspace[key] = str(
+                    (base / raw_path) if base else Path(raw_path).resolve())
         # 相对路径（hidden_tests）以**用例自己的目录**为基准
         doc.setdefault("source_dir", str(case_file.parent))
         raw.setdefault("cases", []).append(doc)
@@ -319,6 +345,19 @@ def _load_suite_dir(root: Path) -> Suite:
     suite.source_path = manifest
     _resolve_hidden_tests(suite, base=root)
     return suite
+
+
+def _repo_root(start: Path) -> Path:
+    """从 `start` 向上找含 `pyproject.toml` 的那一层。
+
+    不写死 `parents[N]`：suite 目录将来可能挪位置，而写死层数在挪动后
+    会**静默**解析到错的地方（或者解析不到而报一个看不懂的错）。
+    """
+    for candidate in (start.resolve(), *start.resolve().parents):
+        if (candidate / "pyproject.toml").is_file():
+            return candidate
+    raise SuiteConfigError(
+        f"cannot locate the repository root above {start} (no pyproject.toml found)")
 
 
 def _resolve_hidden_tests(suite: Suite, *, base: Path) -> None:

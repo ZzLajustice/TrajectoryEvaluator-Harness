@@ -9,6 +9,16 @@ task:
   case_id: bug_empty_field_becomes_zero
   prompt: |
       CSV 里的空字段被读成了 0，导致均值被拉低。按 docstring 的约定，空字段应该是 `None`（缺失），不是零。
+# `source` 相对**仓库根**写（用例要入库，不能写死绝对路径）；
+# 加载器会把它解析成绝对路径。
+#
+# ★ 这一行漏掉的后果不是报错，而是**工作目录是空的**：
+#   没有东西可拷 → 补丁的目标文件不存在 → 而 `git apply` 在 git 仓库
+#   内部对目标不存在的补丁打出 "Skipped patch" 后**返回 0**。
+#   于是 SUT 对着空目录干活，报告上写"模型不会修 bug"。
+workspace:
+  kind: copy
+  source: examples/toyrepo
 expected_failure_modes: []
 hidden_tests: tests/test_hidden.py
 graders:

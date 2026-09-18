@@ -9,6 +9,16 @@ task:
   case_id: bug_report_width_excludes_header
   prompt: |
       `render_table` 输出的表格没对齐：表头比列宽短的时候整列会错位。列宽应该取该列**最长内容**，表头也算内容。
+# `source` 相对**仓库根**写（用例要入库，不能写死绝对路径）；
+# 加载器会把它解析成绝对路径。
+#
+# ★ 这一行漏掉的后果不是报错，而是**工作目录是空的**：
+#   没有东西可拷 → 补丁的目标文件不存在 → 而 `git apply` 在 git 仓库
+#   内部对目标不存在的补丁打出 "Skipped patch" 后**返回 0**。
+#   于是 SUT 对着空目录干活，报告上写"模型不会修 bug"。
+workspace:
+  kind: copy
+  source: examples/toyrepo
 expected_failure_modes: []
 hidden_tests: tests/test_hidden.py
 graders:

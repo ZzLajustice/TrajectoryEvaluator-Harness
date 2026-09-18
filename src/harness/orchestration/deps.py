@@ -255,7 +255,7 @@ class RunBuilder:
     # ---- 入口 ----
     def run_suite_sync(
         self,
-        suite_path: Path | str,
+        suite_path: Suite | Path | str,
         *,
         evaluate: bool = False,
         concurrency: int | None = None,
@@ -271,7 +271,7 @@ class RunBuilder:
 
     async def run_suite(
         self,
-        suite_path: Path | str,
+        suite_path: Suite | Path | str,
         *,
         evaluate: bool = False,
         concurrency: int | None = None,

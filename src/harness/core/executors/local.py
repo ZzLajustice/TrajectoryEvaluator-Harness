@@ -25,14 +25,15 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 import subprocess
 import sys
+import sysconfig
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from harness.contracts.protocols import DirEntry, ProcessResult
+from harness.core.workspace import force_rmtree
 
 _TRUNCATION_MARKER = "\n... [truncated] ...\n"
 
@@ -69,7 +70,10 @@ class LocalExecutor:
             return
         for attempt in range(3):
             try:
-                await asyncio.to_thread(shutil.rmtree, root)
+                # 用 force_rmtree 而不是 shutil.rmtree：Windows 上 git 的
+                # 对象文件是只读的，直接 rmtree 会 PermissionError ——
+                # 而重试解决不了只读位，必须显式清掉
+                await asyncio.to_thread(force_rmtree, root)
                 return
             except PermissionError:
                 if attempt == 2:
@@ -77,6 +81,51 @@ class LocalExecutor:
                 await asyncio.sleep(0.05)
 
     # ---- 进程执行 ----
+    def _child_env(self, extra: Mapping[str, str] | None) -> dict[str, str]:
+        r"""子进程的环境 —— 保证沙箱里的 `python` **真的能跑这个项目的测试**。
+
+        ## 踩到的坑（实测，Windows + uv）
+
+        `.venv\\Scripts\\python.exe` 只有 ~45 KB，它不是 Python，
+        而是 uv 的**跳板**：靠自身路径向上找 `pyvenv.cfg` 来建立 venv 上下文。
+        以裸名启动时 `argv[0]` 里没有目录，跳板找不到 venv，
+        于是**退化成一个没有项目包的基础解释器**：
+
+            $ python -c "import sys; print(sys.prefix)"
+            C:\\Users\\...\\uv\\python\\cpython-3.12-...      ← 不是 .venv
+            $ python -m pytest
+            No module named pytest
+
+        而 `where python` 明明把 `.venv\\Scripts\\python.exe` 列在第一位，
+        绝对路径调用它也一切正常。**同一个文件，换个调用方式就换了个身份** ——
+        所以"PATH 里有没有 python"这个检查通不过任何检验，
+        真正会坏的是"解析到哪一个、带不带 venv 上下文"。
+
+        ## 为什么用 PYTHONPATH 而不是继续调 PATH
+
+        实测：把 PATH 清成只剩 `.venv\\Scripts`，裸名 `python` 仍然落到基础解释器。
+        也就是说路径顺序根本不是决定因素 —— 跳板拿不到自身目录就没救。
+        所以这里不再跟名字解析较劲，直接保证**能力**：
+        把 venv 的 site-packages 放进 `PYTHONPATH`，
+        于是沙箱里**任何**解释器都能 `import pytest` / `import csvlite`。
+
+        ## 为什么这件事必须由 harness 负责
+
+        它的反面是：SUT 拿到一个跑不了测试的环境 →
+        报告里写"模型不会修 bug"。**被测的从来不该是环境考古能力。**
+        它还顺带消掉一个更隐蔽的分歧：SUT 若在另一个 Python 上验证，
+        就会出现"agent 看到全绿、评分看到红"，
+        而那种分歧极难归因，会让整份评测数据不可信。
+        """
+        merged = {**os.environ, **(extra or {})}
+        # 纯乐观项：在跳板行为正常的机器上，这能让 `python` 直接指向 venv
+        interpreter_dir = str(Path(sys.executable).resolve().parent)
+        merged["PATH"] = interpreter_dir + os.pathsep + merged.get("PATH", "")
+        # 真正的保证：无论哪个解释器被启动，项目包都可导入
+        site_packages = sysconfig.get_paths()["purelib"]
+        merged["PYTHONPATH"] = site_packages + os.pathsep + merged.get("PYTHONPATH", "")
+        return merged
+
     async def run_process(
         self,
         argv: Sequence[str],
@@ -94,7 +143,7 @@ class LocalExecutor:
         proc = await asyncio.create_subprocess_exec(
             *[str(a) for a in argv],
             cwd=cwd,
-            env={**os.environ, **(env or {})},
+            env=self._child_env(env),
             stdin=asyncio.subprocess.PIPE if stdin is not None else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

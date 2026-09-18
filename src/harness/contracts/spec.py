@@ -15,7 +15,7 @@ import json
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class RunRole(StrEnum):
@@ -103,6 +103,31 @@ class WorkspaceSpec(_Model):
     overlay: str | None = None
     keep: bool = False
     keep_on_failure: bool = True
+
+    @model_validator(mode="after")
+    def _check_patch_has_something_to_patch(self) -> WorkspaceSpec:
+        """★ 「要打补丁，但没有东西可打」必须是**加载期**的硬错误。
+
+        漏掉 `source` 的后果不是报错，而是**工作目录是空的**：
+        没有东西可拷 → 补丁的目标文件不存在 → 而 `git apply` 在 git 仓库
+        内部对目标不存在的补丁会打出 `Skipped patch` 并**返回 0**。
+        于是 SUT 拿到一个空目录、一路对着空气干活，
+        最后报告上写的是「模型不会修 bug」。
+
+        实测踩的：`_load_suite_dir` 忘了给 `source` 补默认值，
+        17 条用例全部在空目录里跑，而四个门全绿 —— 因为整套测试
+        都在仓库外的 `tmp_path` 里跑（那里 `git apply` 会**报错**而不是静默跳过）。
+
+        确实想从空目录起步就写 `kind: tempdir` —— 那个值是显式的，不会被误读。
+        """
+        if self.patch and self.kind in {"copy", "git_worktree"} and not self.source:
+            raise ValueError(
+                f"workspace.kind={self.kind!r} with a patch but no `source`: "
+                f"there is nothing to patch, and `git apply` inside a git repo "
+                f"silently skips such patches (exit 0), leaving an EMPTY "
+                f"workspace. Set `source`, or use `kind: tempdir` if the patch "
+                f"is meant to create every file.")
+        return self
 
 
 class TaskSpec(_Model):

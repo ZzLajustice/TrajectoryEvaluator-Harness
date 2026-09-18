@@ -9,6 +9,16 @@ task:
   case_id: bug_group_count_drops_singletons
   prompt: |
       `Table.group_count` 少返回了一些分组 —— 只出现一次的组不见了。docstring 说它应该返回**所有**组。
+# `source` 相对**仓库根**写（用例要入库，不能写死绝对路径）；
+# 加载器会把它解析成绝对路径。
+#
+# ★ 这一行漏掉的后果不是报错，而是**工作目录是空的**：
+#   没有东西可拷 → 补丁的目标文件不存在 → 而 `git apply` 在 git 仓库
+#   内部对目标不存在的补丁打出 "Skipped patch" 后**返回 0**。
+#   于是 SUT 对着空目录干活，报告上写"模型不会修 bug"。
+workspace:
+  kind: copy
+  source: examples/toyrepo
 expected_failure_modes: []
 hidden_tests: tests/test_hidden.py
 graders:
