@@ -1,0 +1,21 @@
+# 参考路径 —— 真实 run 录制 → 归一化 → 人工审核。见 docs/known-gaps.md §1.6.4。
+#
+# 保留的是**形状**（改之前先看），不是逐字复刻的序列：
+# 同一条用例的两次合法运行实测差 4 倍步数，逐字复刻只会把好 run 判成 fail。
+# `write_file → run_command`（改完再验）**刻意不放进 golden**：
+# 实测只有 1/17 满足，它是 `no_incomplete_verification` 该报的发现，不是路径要求。
+# 本条录制来源（OutcomeGrader 通过）：run_1789560810973_0010
+alternatives:
+    - [[read_file, {}], [write_file, {}]]
+generated_by:
+  model: deepseek-flash
+  date: '2026-09-16'
+  reviewed: true
+  recorded_runs: 1
+# ⚠️ `alternatives` 目前**只支持一条** —— 匹配器还没实现「多条任一命中」，
+# 多于一条会在加载期报错，而不是静默只用第一条（见 known-gaps §4.2）。
+#
+# ⚠️ 同一次真跑里 golden 与 outcome **17/17 一致**，但那**不是验证**：
+# 这条 golden 正是从这批 run 推导出来的，拿它在这批 run 上算拟合度是
+# 循环论证。机制上的理由（不看就改不可能改对）与 provenance 是它目前
+# 全部的支撑；要谈预测力需要一次**留出** run（换模型或重跑一遍）。

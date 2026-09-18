@@ -25,6 +25,13 @@ graders:
   - name: OutcomeGrader
     config:
       timeout_s: 180.0
+  # 过程分的来源。`expected` **不写在这里** —— 它由加载器从
+  # `golden.yaml` 注入（见 suite.py::_resolve_golden）。
+  # 两处都写必然漂移，而漂移的方向恰好是"报告里的过程分与人对不上"。
+  - name: TrajectoryMatcher
+    config:
+      mode: in_order
+      tool_args_match_mode: ignore
   - name: FailureClassifier
     config:
       expected_modes: [disobey_task_specification]

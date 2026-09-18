@@ -77,14 +77,22 @@ class EvaluatorSpec(_Model):
 
 
 class GoldenSpec(_Model):
-    """参考轨迹。
+    """参考路径。
+
+    形状是 `[[工具名, 参数子集], ...]` 的**有序子序列**（`in_order` 模式：
+    expected 是 actual 的有序子序列）。加载器把它透传给
+    `TrajectoryMatcher.expected` —— 转换过一次就多一处会漂移的地方。
 
     **只存工具名 + 参数子集，绝不存 LLM 原文** —— 存自然语言会让模型
     换个措辞就误判。`alternatives` 是必需的：代码修复任务的合法路径极多，
-    单条 golden 会把好 run 判成 fail。
+    单条 golden 会把好 run 判成 fail（实测数字见 known-gaps §1.6.5）。
+
+    ⚠️ 这个类型此前标成 `list[list[dict]]`，而实际形状是对（pair）。
+    一直没被发现是因为 M11 之前**没有任何代码读过 `golden`** ——
+    一个没人读的字段，标注错了也不会有人遇到。
     """
 
-    alternatives: list[list[dict[str, Any]]] = Field(default_factory=list)
+    alternatives: list[list[tuple[str, dict[str, Any]]]] = Field(default_factory=list)
     generated_by: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -344,7 +352,54 @@ def _load_suite_dir(root: Path) -> Suite:
     suite = Suite.model_validate(raw)
     suite.source_path = manifest
     _resolve_hidden_tests(suite, base=root)
+    _resolve_golden(suite)
     return suite
+
+
+def _resolve_golden(suite: Suite) -> None:
+    """读每条的 `golden.yaml`，并把参考路径**注入** `TrajectoryMatcher`。
+
+    为什么注入而不是让人在 `case.yaml` 里再抄一遍：抄一遍就有两处真相，
+    漂移的方向恰好是「报告里的过程分与人对不上」—— 那是读报告的人
+    最没法自己发现的一种错。
+
+    `golden.yaml` 的来源是**真实 run 录制 → 归一化 → 人工审核**
+    （见 docs/known-gaps.md §1.6.5）。没有它时这条用例不挂过程分，
+    而不是拿一个编出来的路径充数。
+    """
+    for case in suite.cases:
+        if case.source_dir is None:
+            continue
+        path = case.source_dir / "golden.yaml"
+        if not path.is_file():
+            continue
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if not isinstance(doc, dict):
+            raise SuiteConfigError(f"{path}: root must be a mapping")
+        case.golden = GoldenSpec.model_validate(doc)
+        if not case.golden.alternatives:
+            raise SuiteConfigError(f"{path}: `alternatives` is empty")
+        # ★ `TrajectoryMatcher.expected` 是**一条路径**（step 的列表），
+        # 而 `alternatives` 是**路径的列表** —— 差一层。直接把 alternatives
+        # 塞进 expected 会让 `_expected()` 去解包一个 step 的两半，
+        # 报 `TypeError: unhashable type: 'list'`。
+        #
+        # 多条 alternative 的「任一命中即算匹配」是设计文档的要求，
+        # 但匹配器目前只支持单条。**这里报错而不是取第一条** ——
+        # 静默只用第一条会让另外几条看起来「配了」，实际从不参与判定。
+        if len(case.golden.alternatives) > 1:
+            raise SuiteConfigError(
+                f"case {case.case_id!r}: {len(case.golden.alternatives)} "
+                f"alternatives declared, but TrajectoryMatcher only supports "
+                f"a single path today. Either keep one alternative, or "
+                f"implement multi-alternative matching (see "
+                f"docs/known-gaps.md §4.2) — silently using only the first "
+                f"would make the others look configured while never taking "
+                f"part in the verdict.")
+        expected = [list(step) for step in case.golden.alternatives[0]]
+        for grader in case.graders:
+            if grader.name == "TrajectoryMatcher":
+                grader.config.setdefault("expected", expected)
 
 
 def _repo_root(start: Path) -> Path:
