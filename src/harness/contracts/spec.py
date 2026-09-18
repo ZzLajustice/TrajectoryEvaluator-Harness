@@ -73,6 +73,21 @@ class Budget(_Model):
     max_usd: float = 2.0
     max_wall_clock_s: float = 300.0
     warn_at: float = 0.8
+    #: **当前上下文窗口**的上限 —— 超过它触发 `CONTEXT_COMPACT`。
+    #:
+    #: ★ 必须与 `max_input_tokens` 分开。两者量纲看似相同，但语义完全不同：
+    #:
+    #:     max_input_tokens     **累计**输入 token（跨所有轮次）→ 花钱上限
+    #:     max_context_tokens    **当前**上下文大小（单次请求）  → 容量上限
+    #:
+    #: 合成一个字段的后果是**两个旋钮互相锁死**：想造一个"上下文被迫压缩"
+    #: 的场景就得把这个值调低，而调低会先撞上 governor 的累计上限、
+    #: 让 run 以 `budget_exceeded` 结束 —— 压缩逻辑根本轮不到执行。
+    #:
+    #: 实测：`trap_context_pressure` 想考的就是压缩，而 `CONTEXT_COMPACT`
+    #: 事件数一直是 0（峰值 9.3K，而当时两用的那个字段是 400K，差 43 倍）。
+    #: 表面上"配了值"，实际上那个值管的是另一件事。
+    max_context_tokens: int = 100_000
 
 
 class ToolPolicy(_Model):

@@ -154,7 +154,10 @@ class RunContext:
         # 任务提示词在这里进入上下文 —— 缺了它 agent 不知道要做什么
         self.context = ContextManager(
             system_prompt=spec.system_prompt,
-            token_budget=spec.budget.max_input_tokens,
+            # ★ `max_context_tokens` 而不是 `max_input_tokens`。
+            # 后者是**累计**花费上限（跨轮次），拿它当上下文窗口用会让
+            # "压缩"永远轮不到执行：累计值会先撞上限。
+            token_budget=spec.budget.max_context_tokens,
             task=spec.task.prompt if spec.task else None,
         )
         # 工作目录由 Run.execute 在 setup 之后填入；工具与沙箱中间件都靠它

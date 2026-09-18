@@ -19,6 +19,9 @@ task:
 workspace:
   kind: copy
   source: examples/toyrepo
+sut:
+  budget:
+      max_context_tokens: 12000
 expected_failure_modes: [loss_of_conversation_history]
 hidden_tests: tests/test_hidden.py
 graders:

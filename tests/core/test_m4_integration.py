@@ -137,7 +137,11 @@ async def test_compaction_event_carries_run_id_and_seq(tmp_path):
     ContextManager 只给模板，填充由 loop 负责 ——
     忘了填充会产生 run_id 为空的事件，破坏轨迹完整性。
     """
-    budget = Budget(max_turns=30, max_input_tokens=300)
+    # ★ 要压的是**当前上下文窗口**（`max_context_tokens`），
+    # 不是累计花费上限（`max_input_tokens`）。两者曾经共用一个字段，
+    # 于是这条测试也在用错的那个 —— 而它照样绿，因为当时的实现读的
+    # 正是累计值。拆开之后才看得出这里本来该用哪个。
+    budget = Budget(max_turns=30, max_context_tokens=300)
     p = FakeProvider(
         [tool_call_response("echo", {"size": 400}, call_id=f"c{i}") for i in range(29)]
         + [tool_call_response("finish", {"summary": "d"}, call_id="cf")]
@@ -154,7 +158,11 @@ async def test_compaction_event_carries_run_id_and_seq(tmp_path):
 
 async def test_compaction_does_not_orphan_tool_pairings(tmp_path):
     """★ 悬空配对会让下一次 API 调用 400，且错误指不到元凶。"""
-    budget = Budget(max_turns=30, max_input_tokens=300)
+    # ★ 要压的是**当前上下文窗口**（`max_context_tokens`），
+    # 不是累计花费上限（`max_input_tokens`）。两者曾经共用一个字段，
+    # 于是这条测试也在用错的那个 —— 而它照样绿，因为当时的实现读的
+    # 正是累计值。拆开之后才看得出这里本来该用哪个。
+    budget = Budget(max_turns=30, max_context_tokens=300)
     p = FakeProvider(
         [tool_call_response("echo", {"size": 400}, call_id=f"c{i}") for i in range(29)]
         + [tool_call_response("finish", {"summary": "d"}, call_id="cf")]

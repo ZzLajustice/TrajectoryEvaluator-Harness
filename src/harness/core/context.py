@@ -44,6 +44,11 @@ _KEEP_TAIL = 4
 
 _STRATEGY = "drop_oldest_groups"
 
+#: 丢整组解决不了"某个工具结果本身就超预算"时，退而截短它的**内容**。
+#: 保留头部这么多字符 —— 文件开头通常有 docstring / 表头，是最有信息量的部分。
+_ELIDE_KEEP_CHARS = 1500
+_ELIDE_MARKER = "\n... [elided by context compaction] ...\n"
+
 
 def estimate_tokens(text: str) -> int:
     """字符数启发式。**必须确定性** —— 同样输入给同样输出。"""
@@ -154,8 +159,27 @@ class ContextManager:
 
         for group in kept_groups:
             keep.extend(group)
-
         self._history = keep
+
+        # 第三阶段：**截短过大的工具结果内容**。
+        #
+        # 前两个阶段只在"组数足够多"时有效。而最常见的那种超预算 ——
+        # 读进来了一个大文件 —— 是**一个组**（assistant + 它的 tool 结果）。
+        # 此时 `len(kept_groups) == 1`，两个循环都不执行：什么都没丢，
+        # 而事件照样发出来声称压缩过，`needs_compaction()` 也永远为真、每轮空转。
+        #
+        # 为什么截内容而不是删消息：删掉 tool_result 会留下悬空的 tool_use
+        # 配对，下一次 API 调用直接 400（见 `_group_from` 的说明）。
+        # 截内容保持配对完整，模型看到的是"这里省略了一段"。
+        elided = self._elide_oversized_tool_results()
+
+        if not dropped and not elided:
+            # ★ 什么都没改变时**不发事件**。
+            # 发一个 `tokens_before == tokens_after`、`dropped=[]` 的
+            # "压缩事件"是在说谎 —— 而评测器会据此认为上下文被压缩过。
+            # 宁可返回 None：`needs_compaction()` 仍为真，但那是**真实状态**。
+            return None
+
         return ContextCompactEvent(
             run_id="", seq=0, type="context.compact",  # type: ignore[arg-type]
             reason="token_pressure",
@@ -165,7 +189,43 @@ class ContextManager:
             tokens_after=self.estimated_tokens(),
             dropped_message_digests=dropped,
             strategy=_STRATEGY,
+            # 截断是**另一种**压缩，不能混进 `dropped_message_digests`
+            # （那条字段的语义是"整条消息被丢弃"）。`attrs` 正是为这类
+            # 评测器需要的补充信息准备的逃生舱。
+            attrs={"elided_messages": elided} if elided else {},
         )
+
+    def _elide_oversized_tool_results(self) -> int:
+        """把最旧的**工具结果内容**截短，直到回到预算内。返回截了几条。
+
+        只动 `role == "tool"` 的消息：任务描述与 assistant 自己的话是
+        "模型在想什么"的记录，截掉它们会改变任务本身。
+
+        ★ 轨迹不受影响。`ToolResultEvent` 在 telemetry 中间件落盘时已经写下
+        完整原文，这里改的只是喂给模型的**副本**。
+        `GroundingChecker` 仍然看得到全文 —— 否则"模型没看到"会被误判成
+        "模型在编造"，而那正是这个项目最该避免的一类错误归因。
+        """
+        elided = 0
+        for m in self._history:
+            if m.role != "tool":
+                continue
+            if not self._would_exceed([], [self._history]):
+                break
+            shortened = False
+            blocks = []
+            for block in m.content:
+                text = block.get("content")
+                if isinstance(text, str) and len(text) > _ELIDE_KEEP_CHARS * 2:
+                    blocks.append({**block,
+                                   "content": text[:_ELIDE_KEEP_CHARS] + _ELIDE_MARKER})
+                    shortened = True
+                else:
+                    blocks.append(block)
+            if shortened:
+                m.content = blocks
+                elided += 1
+        return elided
 
     def _would_exceed(self, kept: list[Message], groups: list[list[Message]]) -> bool:
         total = estimate_tokens(self.system_prompt)

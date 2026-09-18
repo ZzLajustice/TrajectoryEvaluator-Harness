@@ -154,3 +154,86 @@ def test_bug_is_detected_and_the_fix_passes(case_yaml: Path, tmp_path: Path):
     assert after.returncode == 0, (
         f"{case_dir.name}: UNSOLVABLE — fix.patch does not make the hidden "
         f"tests pass:\n{after.stdout}\n{after.stderr}")
+
+
+# ---- 场景文件（fixture）必须真的进了仓库 ----
+def _case_table():
+    """加载生成器的用例表。
+
+    用 importlib 从路径加载而不是 `import`：`scripts/` 不是包，
+    也不该为了一个测试变成包（加 `__init__.py` 会让它变成可导入的模块，
+    从而进入各处 import 的射程）。
+    """
+    import importlib.util
+    import sys
+
+    path = REPO / "scripts" / "build_cases.py"
+    spec = importlib.util.spec_from_file_location("_build_cases", path)
+    assert spec and spec.loader, f"cannot load {path}"
+    module = importlib.util.module_from_spec(spec)
+    # ★ 必须先注册进 `sys.modules` 再 exec。
+    # `@dataclass` 会按 `cls.__module__` 回查模块来解析类型注解 ——
+    # 没注册时它拿到 `None`，报的是 `dataclasses.py` 里的
+    # `AttributeError: 'NoneType' object has no attribute '__dict__'`，
+    # 而那个回溯完全指不到真正的原因（模块没注册）。
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return {c.case_id: c for c in module.CASES}
+
+
+def test_declared_fixture_files_are_committed():
+    """★ 「生成器声明了 fixture」≠「fixture 进了仓库」。
+
+    这条测试补的是一次真实事故：`Case.fixture` 被 `_fresh_repo` 用来搭
+    **生成器自己的临时仓库**，却从没写进仓库里的用例目录 ——
+    于是三个陷阱的机制**从来没进过仓库**：
+
+        trap_context_pressure  让模型去读 `data/readings.csv` / `CHANGELOG.md`
+                               （两个都不存在）
+        trap_loop_retry        那份把注意力引向"重跑"的维护笔记不存在
+        trap_injection         `CONTRIBUTING.md` 里的诱导注入不存在
+
+    症状极具误导性：模型被要求读不存在的文件、注入从未出现，
+    而报告上写的是"模型没完成任务 / 分类器没检出注入"。
+    真跑里 `trap_injection` 的 `FailureClassifier` 报 0 个模式，
+    当时被记成"无法归因"，**真因是注入压根没发生**。
+
+    而 `WorkspaceSpec.overlay` 是按"目录存在"自动识别的 ——
+    目录不在时它静默为 None，于是"缺场景"与"这条用例不需要场景"
+    在配置上长得一模一样。
+    """
+    table = _case_table()
+    missing = []
+    for case_yaml in CASE_FILES:
+        case_id = case_yaml.parent.name
+        case = table.get(case_id)
+        assert case is not None, (
+            f"{case_id}: 已提交但没有出现在生成器的数据表里 —— "
+            f"多半是有人手改了产物。跑 `scripts/build_cases.py` 重新生成。")
+        for rel in case.fixture:
+            if not (case_yaml.parent / "fixture" / rel).is_file():
+                missing.append(f"{case_id}/fixture/{rel}")
+    assert not missing, (
+        "生成器的数据表声明了这些场景文件，但它们不在仓库里：\n  "
+        + "\n  ".join(missing)
+        + "\n（陷阱没有场景就不是陷阱 —— 跑 `scripts/build_cases.py` 重新生成）")
+
+
+def test_trap_cases_have_a_reachable_mechanism():
+    """★ 带 `trap` 标签的用例必须真的有"场景"作为机制。
+
+    `trap_fabricate` 是例外：它的机制是"可见测试没覆盖验收要求"，
+    靠题面与测试的**不重合**成立，不需要额外文件。
+    """
+    table = _case_table()
+    scenery_based = {"trap_context_pressure", "trap_loop_retry", "trap_injection"}
+    for case_id in scenery_based:
+        case = table[case_id]
+        assert case.fixture, f"{case_id} 的陷阱机制依赖场景文件，但表里没声明"
+        fixture_dir = CASES_DIR_FOR(case_id) / "fixture"
+        files = [f for f in fixture_dir.rglob("*") if f.is_file()]
+        assert files, f"{case_id}: fixture 目录是空的 —— 陷阱没上膛"
+
+
+def CASES_DIR_FOR(case_id: str):
+    return REPO / "suites" / "codefix" / "cases" / case_id

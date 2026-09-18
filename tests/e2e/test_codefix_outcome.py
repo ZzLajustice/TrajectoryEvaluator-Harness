@@ -52,7 +52,8 @@ _FAKE_FIX = (f"import pathlib; p = {_SRC}; "
 _NOOP = "print('nothing to do')"
 
 
-def _suite(tmp_path, script: list[dict], *, graders: list[dict] | None = None):
+def _suite(tmp_path, script: list[dict], *, graders: list[dict] | None = None,
+           case_id: str = CASE_ID):
     """加载**真正的** `suites/codefix`，只把 provider 换成假的和注入脚本。
 
     ★ 曾经这里是手写一份 suite 文件（自己填 `source` / `patch` /
@@ -69,7 +70,7 @@ def _suite(tmp_path, script: list[dict], *, graders: list[dict] | None = None):
     suite.defaults.fake_script = script
     # 只留一条用例：这套 e2e 测的是"结果级评测的链路通不通"，
     # 不是 17 条用例的内容（那个由 tests/suites/ 的自检 + 真模型跑覆盖）
-    suite.cases = [c for c in suite.cases if c.case_id == CASE_ID]
+    suite.cases = [c for c in suite.cases if c.case_id == case_id]
     if graders is not None:
         suite.cases[0].graders = [EvaluatorSpec(**g) for g in graders]
     return suite
@@ -372,3 +373,89 @@ def test_a_patch_without_a_source_is_a_config_error(tmp_path):
 
     with pytest.raises(ValueError, match="nothing to patch"):
         load_suite(path)
+
+
+# ---- 陷阱的机制必须真的触发 ----
+def test_the_context_pressure_trap_actually_compacts(tmp_path):
+    """★ 陷阱测的必须是它**声称**的东西。
+
+    实测：全量真跑里 `CONTEXT_COMPACT` 事件数是 **0** —— 连 131K input
+    tokens 的那条都没触发。于是 `trap_context_pressure` 号称考"压缩后
+    丢失关键信息"，实际什么都没考到。
+
+    根因是**上下文窗口与累计花费共用一个字段**：`ContextManager` 读的是
+    `Budget.max_input_tokens`，而 governor 拿同一个值当"跨轮次累计花费上限"。
+    想造一个上下文被迫压缩的场景就得把这个值调低，而调低会先撞 governor 的
+    累计上限、让 run 以 `budget_exceeded` 结束 —— 压缩逻辑根本轮不到执行。
+
+    拆出 `max_context_tokens` 之后这条陷阱才有了机制。这里用假 provider
+    确定性地证明它真的会发生：零成本、零网络、结论与真模型无关。
+    """
+    suite = _suite(tmp_path, [
+        {"tool": "read_file", "arguments": {"path": "data/readings.csv"}},
+        {"tool": "read_file", "arguments": {"path": "CHANGELOG.md"}},
+        {"tool": "read_file", "arguments": {"path": "csvlite/stats.py"}},
+        {"tool": "finish", "arguments": {"summary": "read the fixtures"}},
+    ], case_id="trap_context_pressure")
+    budget = suite.cases[0].sut.budget
+    assert budget is not None, '这条用例必须显式配 sut.budget'
+    assert budget.max_context_tokens <= 20_000, (
+        "这条陷阱依赖一个**小**上下文窗口；默认值下 fixture 顶不破它")
+
+    outcome = RunBuilder(out_dir=tmp_path / "runs",
+                         workdir=tmp_path / "wd").run_suite_sync(
+        suite, evaluate=False)[0]
+
+    # `compactions()` 而不是自己过滤 events：它返回的是**收窄过的**类型，
+    # 手写过滤拿到的是 EventUnion，于是每个字段访问都要求 isinstance 收窄
+    # （pyright 会为联合体的每个成员各报一次错）
+    compactions = outcome.result.trajectory.compactions()
+    assert compactions, (
+        "陷阱的机制没有触发：读那两个 fixture 也没把上下文顶过窗口。"
+        "这条用例现在测的不是它声称的东西。")
+
+    event = compactions[0]
+    # ★ 判据是**上下文真的变小了**，不是"事件发出来了"。
+    # 曾经的实现只在"组数足够多"时才丢东西，而最常见的那种超预算 ——
+    # 读进来一个大文件 —— 只有**一个组**，两个丢弃循环都不执行：
+    # 什么都没丢（tokens_before == tokens_after），事件却照样发出来声称压缩过。
+    # 那是个会说谎的事件，评测器会据此认为上下文被压缩了。
+    assert event.tokens_after < event.tokens_before, (
+        f"压缩事件声称压缩过，但上下文没变小："
+        f"{event.tokens_before} → {event.tokens_after}")
+
+    # 压缩得说得出自己做了什么。丢整条消息与截短内容是不同的机制，
+    # 分别记在 dropped_message_digests 与 attrs 里 —— 两者都空说明它没辙了。
+    assert event.dropped_message_digests or event.attrs.get("elided_messages"), (
+        "压缩既没丢消息也没截内容，那它压缩了什么？")
+
+
+def test_compaction_leaves_a_visible_marker(tmp_path):
+    """★ 被省略的内容必须让模型**看得出来**。
+
+    悄悄截断等于制造幻觉：模型拿到一个看起来完整、实际缺了一半的工具结果，
+    然后如实地报告"文件里没有那段"—— 而它说的没错，是我们没告诉它。
+
+    这条同时是 `trap_fabricate` 的前提：GroundingChecker 靠"工具输出里有没有
+    这段"判幻觉，而它读的是**轨迹**（完整原文，未被压缩影响）。
+    模型那份副本被截断了、轨迹那份没有 —— 这个差别必须由标记说清楚。
+    """
+    suite = _suite(tmp_path, [
+        {"tool": "read_file", "arguments": {"path": "data/readings.csv"}},
+        {"tool": "finish", "arguments": {"summary": "read"}},
+    ], case_id="trap_context_pressure")
+    outcome = RunBuilder(out_dir=tmp_path / "runs",
+                         workdir=tmp_path / "wd").run_suite_sync(
+        suite, evaluate=False)[0]
+
+    # 轨迹里那份**必须是完整的**（GroundingChecker 拿它当判据）
+    result = next(r for r in outcome.result.trajectory.tool_results()
+                  if r.name == "read_file")
+    assert "[elided by context compaction]" not in result.content, (
+        "压缩改到了轨迹里的原文 —— 那会让 GroundingChecker 把"
+        "「模型没看到」误判成「模型在编造」")
+
+    # 而喂给模型的那份要带上标记
+    elided = outcome.result.trajectory.compactions()
+    assert elided and elided[0].attrs.get("elided_messages"), (
+        "没有发生截断，这条测试失去意义（fixture 是不是变小了？）")
