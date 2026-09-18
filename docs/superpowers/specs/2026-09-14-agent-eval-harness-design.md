@@ -48,20 +48,37 @@
 
 ### 2.1 分层
 
+> **本节已按实现校正**（2026-09-18）。原先这里是一张手写编号表
+> （`L1/L2/L3/L6/L0`），它与实现有两处不符：**没有 `testing/`**（后来加的一层）、
+> 把 `cli` 写成只能 import `orchestration` / `report`（实际上组装层不受白名单约束）。
+> 编号本身也无处校验 —— 那是**文档说法**，不是声明。
+>
+> 现在编号定死在 `tests/test_architecture.py::LAYERS`，并有测试盯着它
+> 与白名单一致。**改分层要改那张表与下表，两处一起改。**
+
 ```
-L1  CLI            harness run / report / diff / ci
-L2  Orchestration  suite loader → scheduler → aggregator → judge runner
-L3  Core           Agent Loop · Pipeline · Budget · Context
-                   · Tool Registry · Middleware · Executors
-L6  Evaluators     report/   adapters/
-L0  events/  ←  contracts/    叶子层，不 import 任何上层
+  cli.py · orchestration/                       ← 组装层：可 import 一切（依赖注入的落点）
+         ↓
+  report/                                        ← events · contracts · store（只读）
+  adapters/ · evaluators/ · testing/            ← events · contracts
+         ↓
+  core/ · store/ · providers/                    ← events · contracts
+         ↓
+  contracts/                                     ← events
+         ↓
+  events/                                        ← 仅自己（+ 标准库 + pydantic）
 ```
 
-### 2.2 关键决策：新增 L0 叶子层
+⚠️ **不要读成"上层可 import 下面每一层"。** 中间的 `report | adapters |
+evaluators | testing` 与 `core | store | providers` **不是一条链**，而是一个
+**DAG**：`report → store` 成立，而 `core` 与 `report` **互不可见**。
+线性排列表达不了这件事 —— 这正是 §2.4 的 import-linter 契约型别被换掉的原因。
+
+### 2.2 关键决策：新增叶子层（`events` + `contracts`）
 
 **问题**：若 `Trajectory` 住在 `store/`，评测器就不得不 import `store`，而 `store` 需要 import `core` 的错误类型 → 循环依赖立刻出现。
 
-**决策**：`events/` + `contracts/` 共同构成 L0 叶子层，**不 import 任何其他 harness 包**。`Trajectory` 是**事件之上的只读视图**，不含 I/O，因此归属 `events/` 而非 `store/`。
+**决策**：`events/` + `contracts/` 共同构成叶子层（`LAYERS[0]` 与 `LAYERS[1]`），**不 import 任何其他 harness 包**。`Trajectory` 是**事件之上的只读视图**，不含 I/O，因此归属 `events/` 而非 `store/`。
 
 所有 Protocol（`Evaluator` / `Middleware` / `LLMProvider` / `Executor` / `TrajectoryStore` / `JudgeClient`）全部下沉到 `contracts/`。
 
@@ -86,12 +103,28 @@ evaluators/  ──依赖──▶  JudgeClient (Protocol, 在 contracts/)
 |---|---|
 | `events` | 仅标准库 + pydantic |
 | `contracts` | `events` |
-| `evaluators` / `core` / `store` / `providers` / `adapters` | `events`、`contracts` |
+| `evaluators` / `core` / `store` / `providers` / `adapters` / `testing` | `events`、`contracts` |
 | `report` | `events`、`contracts`、`store`(只读) |
 | `orchestration` | 全部（唯一的组装层） |
-| `cli` | `orchestration`、`report` |
+| `cli` | 不受约束 —— 它也是组装层的一部分 |
 
-**用纯 `ast` 的架构测试强制**（`tests/test_architecture.py`，零依赖）。这是架构约束的**可执行契约**——新增评测器时若不小心 import 了 `core`，测试立刻红。
+**权威是代码**：`tests/test_architecture.py::ALLOWED_IMPORTS`。本表是它的说明，
+不一致时以代码为准（有测试盯着这一点，见下）。
+
+**两道防线，而且它们必须等价**：
+
+| | 给谁用 | 机制 |
+|---|---|---|
+| `tests/test_architecture.py`（纯 `ast`，零依赖） | 单测 | 失败时能精确指出**违规文件 + import 语句** |
+| `uv run lint-imports` | CI（配置即文档） | `pyproject.toml` 里逐包的 `forbidden` 契约 |
+
+⚠️ 这里曾经是一条 `layers` 契约，而它**比白名单宽**。实测：往
+`evaluators/base.py` 加一行 `from harness.core import workspace` ——
+`layers` 契约**报绿**（整个 lint-imports 门是绿的），只有 ast 测试抓到。
+原因是型别选错了：`layers` 只表达得了全序，而真实依赖图是 DAG。
+
+现在两份表由 `test_import_linter_mirrors_the_whitelist` 断言**等价** ——
+改了一处忘了另一处会立刻红。**"刻意冗余"只有在等价时才有价值。**
 
 ---
 
@@ -486,7 +519,7 @@ SUT 执行安全边界：临时目录内 + 禁网 + 危险命令拦截（`rm -rf
 
 四层防线：
 
-1. **类型下沉 + `extra="forbid"`** — 改事件定义要动 L0，成本显式化
+1. **类型下沉 + `extra="forbid"`** — 改事件定义要动叶子层，成本显式化
 2. **`attrs` 逃生舱** — 评测器的临时字段一律进 `attrs`
 3. **Golden JSONL 回归 + 字段快照测试** — 已提交的老轨迹必须永远可读；字段集合快照让任何 schema 改动在 code review 中显式可见
 4. **规约：加字段前先自问「能否从已有事件派生」** — 绝大多数「我需要 X 字段」其实是「我能从 TOOL_CALL/TOOL_RESULT 配对算出来」。只有信息不可恢复时（如 provider 内部重试次数）才允许加字段

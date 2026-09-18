@@ -487,6 +487,7 @@ judge 有自己的沙箱，与 SUT 的 workspace 是两回事，
 | M11 | 工作目录路径常量放进了 `store/layout.py` | `core` **看不见** `store`（层级表里 store 在 core 之上）—— `lint-imports` 直接红。**架构约束在这里是净收益**：它没有静默降级 |
 | M11 | `_run_case` 的 `finally` 里引用 `result.run_id` | `Run.execute()` 抛异常时 `result` 还没绑定 → finally 里抛 `NameError`，把真正的异常盖掉 |
 | M11 | `_apply_edit` 是唯一漏了 `newline="\n"` 的写盘点 | 整文件重写把 LF 变 CRLF → `git diff` 认为每行都变了 → **1 行改动生成 349 行补丁**。而它功能上完全正确（`git apply` 照样成功、双向验证照样过）—— 除非有人真去打开看，永远不会被发现 |
+| M11 | `lint-imports` 的 `layers` 契约**比架构测试宽** | 号称「刻意冗余」的两道防线**并不等价**，而其中一条是假的：实测往 `evaluators/base.py` 加一行 `from harness.core import workspace`（架构支点），`layers` 契约**报绿** —— 只有 ast 测试抓到。根因是**型别选错**：`layers` 只表达全序，而依赖图是 DAG。已换成逐包 `forbidden` 契约并**断言两份表等价** |
 | M11 | 工作目录成为 git 仓库后，`rmtree` 删不掉只读的 `.git/objects/**` | `PermissionError: [WinError 5]`。**重试救不了只读位** —— 它不会自己消失，必须显式 `chmod`。与"文件被占用"是两种成因，`LocalExecutor` 里那套重试对它无效 |
 | M11 | 沙箱里裸名 `python` 落到 uv 的 base 解释器 | 见 §2.7 第 3 条 |
 | M11 | `_load_suite_dir` 忘了设 `workspace.source` | 见 §2.7 第 1 条 |

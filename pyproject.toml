@@ -176,14 +176,158 @@ forbidden_modules = [
   "harness.store", "harness.report", "harness.adapters", "harness.cli",
 ]
 
+# ---- 逐包的依赖边，**精确镜像** `ALLOWED_IMPORTS` ----
+#
+# ★ 这里曾经是一条 `layers` 契约，而它**比架构测试宽** —— 也就是比它本该
+#   冗余的那份宽。原因不是配错了，是**类型选错了**：
+#
+#   `layers` 只表达得了全序（上层可 import 下层 + 同层可互相 import），
+#   而真实的依赖图是 **DAG**：`report → store` 成立，而 `core` 与 `report`
+#   **不可比**（core 不许 import report，report 也不许 import core）。
+#   任何线性排列都会放行一条白名单禁止的边 —— 把 core 排在 report 之上
+#   就放行 `core → report`，排在之下就放行 `report → core`。
+#
+#   `forbidden` 契约没有这个限制：每个包列一遍"不许 import 谁"，
+#   DAG 原样表达。
+#
+# ★ 两份表**等价**这件事有测试盯着
+#   （`tests/test_architecture.py::test_import_linter_mirrors_the_whitelist`），
+#   不是口头约定。"刻意冗余"只有在两份等价时才有价值 —— 否则读这份配置的人
+#   会相信那个更弱的说法。
+
 [[tool.importlinter.contracts]]
-name = "layered architecture"
-type = "layers"
-layers = [
+name = "events layer edges"
+type = "forbidden"
+source_modules = ["harness.events"]
+forbidden_modules = [
+  "harness.adapters",
   "harness.cli",
-  "harness.orchestration",
-  "harness.report | harness.adapters | harness.evaluators",
-  "harness.core | harness.store | harness.providers",
   "harness.contracts",
-  "harness.events",
+  "harness.core",
+  "harness.evaluators",
+  "harness.orchestration",
+  "harness.providers",
+  "harness.report",
+  "harness.store",
+  "harness.testing",
+]
+
+[[tool.importlinter.contracts]]
+name = "contracts layer edges"
+type = "forbidden"
+source_modules = ["harness.contracts"]
+forbidden_modules = [
+  "harness.adapters",
+  "harness.cli",
+  "harness.core",
+  "harness.evaluators",
+  "harness.orchestration",
+  "harness.providers",
+  "harness.report",
+  "harness.store",
+  "harness.testing",
+]
+
+[[tool.importlinter.contracts]]
+name = "evaluators layer edges"
+type = "forbidden"
+source_modules = ["harness.evaluators"]
+forbidden_modules = [
+  "harness.adapters",
+  "harness.cli",
+  "harness.core",
+  "harness.orchestration",
+  "harness.providers",
+  "harness.report",
+  "harness.store",
+  "harness.testing",
+]
+
+[[tool.importlinter.contracts]]
+name = "core layer edges"
+type = "forbidden"
+source_modules = ["harness.core"]
+forbidden_modules = [
+  "harness.adapters",
+  "harness.cli",
+  "harness.evaluators",
+  "harness.orchestration",
+  "harness.providers",
+  "harness.report",
+  "harness.store",
+  "harness.testing",
+]
+
+[[tool.importlinter.contracts]]
+name = "store layer edges"
+type = "forbidden"
+source_modules = ["harness.store"]
+forbidden_modules = [
+  "harness.adapters",
+  "harness.cli",
+  "harness.core",
+  "harness.evaluators",
+  "harness.orchestration",
+  "harness.providers",
+  "harness.report",
+  "harness.testing",
+]
+
+[[tool.importlinter.contracts]]
+name = "providers layer edges"
+type = "forbidden"
+source_modules = ["harness.providers"]
+forbidden_modules = [
+  "harness.adapters",
+  "harness.cli",
+  "harness.core",
+  "harness.evaluators",
+  "harness.orchestration",
+  "harness.report",
+  "harness.store",
+  "harness.testing",
+]
+
+[[tool.importlinter.contracts]]
+name = "adapters layer edges"
+type = "forbidden"
+source_modules = ["harness.adapters"]
+forbidden_modules = [
+  "harness.cli",
+  "harness.core",
+  "harness.evaluators",
+  "harness.orchestration",
+  "harness.providers",
+  "harness.report",
+  "harness.store",
+  "harness.testing",
+]
+
+[[tool.importlinter.contracts]]
+name = "report layer edges"
+type = "forbidden"
+source_modules = ["harness.report"]
+forbidden_modules = [
+  "harness.adapters",
+  "harness.cli",
+  "harness.core",
+  "harness.evaluators",
+  "harness.orchestration",
+  "harness.providers",
+  "harness.testing",
+]
+
+[[tool.importlinter.contracts]]
+name = "testing layer edges"
+type = "forbidden"
+source_modules = ["harness.testing"]
+forbidden_modules = [
+  "harness.adapters",
+  "harness.cli",
+  "harness.core",
+  "harness.evaluators",
+  "harness.orchestration",
+  "harness.providers",
+  "harness.report",
+  "harness.store",
 ]
