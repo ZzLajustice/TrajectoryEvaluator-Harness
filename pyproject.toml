@@ -87,6 +87,7 @@ dev = [
   "pyright>=1.1.400",             # CI gate（下界放宽，见上条说明）
   "pre-commit>=4.6,<5",
   "import-linter>=2.15,<3",
+  "freezegun>=1.5.5",
 ]
 
 [build-system]
@@ -132,7 +133,12 @@ src = ["src"]
 #
 # `examples/toyrepo` **不**排除：它是被测对象本身，
 # 代码风格应当和真实项目一样经得起看。
-extend-exclude = ["suites"]
+# `examples/vendor/` 是**第三方源码**（vendored 的真实 OSS 仓库，见各目录的
+# VENDOR.md）。它保留上游风格，按本仓库的规则检查等于跟上游较劲 ——
+# 而每次重新 vendor 都要再改一遍，纯噪音。
+#
+# 它与 `suites/` 的排除理由不同：那个是"生成物"，这个是"别人的代码"。
+extend-exclude = ["suites", "examples/vendor"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "D", "I", "B", "DTZ", "TID251", "PLE", "SIM101"]
