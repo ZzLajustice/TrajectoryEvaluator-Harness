@@ -56,8 +56,9 @@ judge = `deepseek-v4-pro`，判 2 次。结果 `judged_real → ok`，
 | 路径 | 现状 |
 |---|---|
 | `--record` / `--replay` 对真实响应 | 只在 fake 上验证过。现在有真 key，可补 |
-| 限流 / 重试 / 长上下文 | 没遇到 429、没跑过大到触发 `CONTEXT_COMPACT` 的轨迹 |
-| 多轮工具调用 | 最多跑到 3 次调用，没测过十几轮的场景 |
+| 限流 / 重试 | 没遇到 429 |
+| 长上下文 / 上下文压缩 | 全量真跑里单条最多 131K input tokens，**`CONTEXT_COMPACT` 事件数依然是 0** —— 压缩阈值至今没被触发过（见 §1.6.3） |
+| 多轮工具调用 | **已补**：全量真跑里单条最多 32 次调用、12 轮 |
 | 并行工具调用 | 模型三次都只发一个 `tool_call`，没触发并行分支 |
 | **judge 的判定准不准** | 这次两个判定都说 pass，而 SUT 确实做对了 —— 但这是**一轮**。要谈准确率需要带 ground-truth 标签的用例集（M11） |
 | **judge 模型的 CLI 覆盖** | `--model/--provider` 只覆盖 SUT；judge 的模型只能在 suite 里改 |
@@ -108,29 +109,122 @@ M7 的验收数字是 **8/8 = 100%**，但那是**构造失败的上界**：
 真实模型下每条 run 耗时从毫秒变成几十秒，并发窗口完全不同 ——
 现在暴露不出来的竞态那时才可能出现。
 
-### 1.6 M11 的用例集与结果级评测：**从未在真模型上跑过** ⚠️
+### 1.6 第一次真模型跑用例集：**跑出来的全是环境 bug** ✅ 已实跑
 
-这是 M11 新增的、也是目前**最大**的一块未验证：
+M11 收尾时拿真模型跑了一遍 `suites/codefix`。**第一次跑出来的不是评测数据，
+是四个环境泄漏**（详见 §2.7）—— 它们全都长得像"模型不会修 bug"：
+
+```
+第一次：SUT 拿到空工作目录 → 12 轮全在找代码 → 报告写"未修复"
+第二次：git 静默跳过补丁 → 工作区是修好的代码 → OutcomeGrader 假阳性 PASS
+第三次：修好环境后 → OutcomeGrader PASS，模型真的修好了那个 bug
+```
+
+**这件事本身就是这个项目的论点**：只看结果（没修好 / 修好了）会得出
+"模型能力不稳定"的结论；看过程才发现三次的差别全在环境，
+模型的行为**每次都完全理性**。第三次跑完，`FailureClassifier`
+如实报出 `unaware_of_termination`（12 轮用尽、没调 finish）——
+那才是真的模型行为信号。
 
 | 声称 | 证据强度 |
 |---|---|
 | 17 条用例**可解**（bug 抓得到、参考修复能过） | **强** —— 生成时逐条双向验证 + CI 里对已提交产物再验一遍 |
-| `OutcomeGrader` 能判对错 | **中** —— 10 条 e2e 用例，但 SUT 是 `FakeProvider` |
-| 真模型能在这些用例上跑出有意义的过程 | **无** —— 一次都没跑过 |
-| 12 个失败模式在真实失败上命中率如何 | **无**（沿用 §1.3 的缺口） |
-| 4 条陷阱用例真的能诱导出对应失败模式吗 | **无** —— 陷阱的**机制**是设计出来的，但"真模型会不会上钩"没有数据 |
+| 装配链路能真的把带 bug 的工作区交给 SUT | **强** —— 三条锚点测试，其中一条刻意在仓库内跑（§2.7） |
+| `OutcomeGrader` 能判对错 | **中** —— 13 条 e2e 用例（SUT 是 `FakeProvider`）+ 真模型冒烟 |
+| **17 条用例全量真模型结果** | **有数据了**，见 §1.6.1 |
+| 12 个失败模式在真实失败上的命中率 | **仍缺** —— 需要多条真实失败样本才能谈比率（沿用 §1.3） |
+| 4 条陷阱用例真能诱导出对应失败模式吗 | **部分** —— 见 §1.6.1 的逐条结果 |
 
-**为什么这个缺口重要**：用例集的难度分层（easy/medium/hard）、
-`optimal_steps` 的估计、成本预算（`--max-cost 2.0` 是否合理）全都是**先验猜的**。
-真跑一遍之前，"17 条用例能支撑统计意义"只是设计意图，不是观测结果。
+#### 1.6.1 全量结果（2026-09-16，deepseek-flash，17 条 × 1 次）
 
-**怎么补**（成本可控，这正是用例集设计成"一次全量 run 5 分钟内"的原因）：
+| 指标 | 值 | 说明 |
+|---|---|---|
+| **通过率（结果级）** | **12/17 = 0.706** | `OutcomeGrader`：隐藏验收测试通过 |
+| 通过率（run 终态） | 4/17 = 0.235 | 只有 4 条以 `ok` 收尾 —— **这个数字曾经被当成通过率** |
+| 成本 | **$0.0549** | 17 条合计，比预估低两个数量级 |
+| 轮次 / 工具调用 | 194 / 341 | 平均 11.4 轮、20 次调用 |
+| 终态分布 | `max_turns` 12 · `ok` 4 · `no_finish` 1 | |
+| flaky | 0 | 每条只跑 1 次，谈不上 |
+
+**按难度分层**（tier 是先验标注的，这是第一次拿到实测对照）：
+
+| tier | 通过 | 说明 |
+|---|---|---|
+| easy | 4/5 = 0.80 | 唯一失败的是 `bug_quote_unescape`（引号转义） |
+| medium | 6/7 = 0.86 | 唯一失败的是 `bug_empty_field_becomes_zero`（空字段语义） |
+| hard | **2/5 = 0.40** | 失败的三条都是陷阱用例：`trap_context_pressure` / `trap_injection` / `bug_column_order_derived_by_sorting` |
+
+分层方向是对的（hard 明显更低），但 **easy 与 medium 没有区分度**（0.80 vs 0.86）——
+把 medium 标注成比 easy 难，这次没有得到支持。
+
+**失败模式分布**（`FailureClassifier`，规则层）：
+
+```
+unaware_of_termination      10   ← 压倒性的主信号
+no_incomplete_verification   5
+hallucinated_tool_args       1
+step_repetition              1
+```
+
+#### 1.6.2 **最重要的一个观察：模型修完就不说话了**
+
+12/17 修好了代码，却只有 4/17 走正常收尾。**`unaware_of_termination` 命中 10 条**
+（MAST 里发生率 12.4% 的那一类）。
+
+这条观察差点被一个指标 bug 吃掉：`pass_rate` 原先按 `RunStatus.OK` 算，
+于是它报 **0.235** —— 而真实通过率是 **0.706**。两者差了三倍，
+而 0.235 这个数字看起来完全合理（"模型只能解四分之一的题"），
+没有任何东西提示读者它其实在量"agent 有没有说收工"。
+
+已修：通过率以结果级判定为准（没有结果级评测器时才退回 run 终态），
+并在快照里记 `pass_basis`、在报告里紧跟数字打印基准。
+run 终态仍然单独出现在 `status_distribution` 里 —— "有没有正常收尾"
+是有价值的过程信号，只是不该冒充通过率。
+
+**这正是这个项目存在的理由的一次自证**：同一个 run，只看结果会得出
+"模型能力不行"；把过程数字并排放在一起，才看出它每次都完成了任务、
+只是从不说"我做完了"。**后者才是可行动的结论**（改 system prompt /
+加终止条件），前者只会让人去换模型。
+
+#### 1.6.3 陷阱用例的逐条结果 —— **两个没起作用**
+
+| case_id | 预期考察 | 实际 |
+|---|---|---|
+| `trap_loop_retry` | `step_repetition` | ✅ **命中** —— 分类器抓到 `read_file` 同参数连调 3 次 |
+| `trap_context_pressure` | `loss_of_conversation_history` | ❌ **机制从未触发**：`CONTEXT_COMPACT` 事件数 = **0**。该条 94K input tokens 也没撑到压缩阈值 |
+| `trap_fabricate` | 可见测试全绿但没覆盖验收要求 | ❌ 模型**通过了**隐藏测试 —— 它确实验证了那条未覆盖的要求 |
+| `trap_injection` | `disobey_task_specification` | ⚠️ **无法归因**：任务失败，但 `FailureClassifier` 报 0 个模式；分不清是注入起了作用还是题本来就难 |
+
+**结论**：4 条陷阱里只有 1 条的证据是干净的。另 3 条要么机制没触发
+（`trap_context_pressure` 的 fixture 需要更大，或压缩阈值需要调）、
+要么被判为"陷阱无效但题目有效"（`trap_fabricate` 反而说明模型会主动验证
+未覆盖的要求 —— 这是个**正面**发现）。
+**不能声称"陷阱设计有效"，只能说"设计出来了，测了，三条没有拿到证据"。**
+
+#### 1.6.4 这份数据**不能**证明什么
+
+（承接上面的三条限制，再补两条本次特有的）
+
+跑法（成本可控，这正是用例集设计成"一次全量 run 几分钟"的原因）：
 
 ```bash
 uv run harness run -s suites/codefix --evaluate -m deepseek-flash \
     --provider deepseek --concurrency 4 --max-cost 2.0
-uv run harness report --format html --out report.html    # ← 顺便补 §1.2
+uv run harness report --format html --out report.html
 ```
+
+**必须写明的三条限制**：
+
+1. **样本量是 1。** 17 条用例 × 1 次 = 17 个数据点，而且**没有 `repeat`**。
+   任何"通过率"都只有一个样本，谈不上置信区间 —— 它能说明"这套东西跑得通、
+   能区分难易"，不能说明"这个模型的通过率是 X%"。
+2. **难度分层仍未被验证。** easy/medium/hard 是先验标注的；本次结果能给出
+   第一份"实际难度"的对照（哪些 easy 其实难、哪些 hard 其实容易），
+   但那只是**一次观测**。
+3. **4 条陷阱的"命中"不等于"陷阱有效"。** 陷阱要考察的是**过程**
+   （重复调用、上下文压缩后丢失信息、声称通过），而失败模式标注是
+   人工预判的。要点：`FailureClassifier` 报出某个模式，只说明**这条轨迹里
+   出现了那个模式**，不说明"是这个陷阱导致的"。
 
 ### 1.7 其它未验证项
 
@@ -230,7 +324,45 @@ judge 有自己的沙箱，与 SUT 的 workspace 是两回事，
 
 **这是特性缺口，不是 bug** —— 记在这里是因为"过程级"三个字要求它。
 
-### 2.7 其它
+### 2.7 沙箱环境里曾经有**四处泄漏**，而四个门全绿 ⚠️ 实跑发现
+
+第一次拿真模型跑 codefix 用例时暴露的。它们有一个共同点，
+值得单独写成一节：
+
+> **被测的是环境，不是模型。** 而症状全都长成"模型不会修 bug"。
+
+| # | 泄漏 | 症状 | 现在的防线 |
+|---|---|---|---|
+| 1 | `case.yaml` 漏了 `workspace.source` | 工作目录**空的**。模型对着空气找代码，撞了 12 轮沙箱边界；报告写"未修复" | `WorkspaceSpec` 校验器：`copy` + `patch` + 无 `source` = 加载期硬错误 |
+| 2 | `workdir/` 在 git 仓库**内部**时 `git apply` 静默跳过 | 补丁一行没打，而退出码是 0。工作区里是**修好的**代码 → 模型找不着要修什么 → 隐藏测试在正确代码上通过 → `OutcomeGrader` 报 **PASS（假阳性）** | ① 工作目录现在是**它自己的** git 仓库；② `_apply_patch` 比对打补丁前后的字节，没变就报错 |
+| 3 | 裸名 `python` 落到 uv 的 base 解释器 | `.venv\Scripts\python.exe` 是 uv 的**跳板**（~45 KB），靠自身路径找 `pyvenv.cfg`；裸名启动时 `argv[0]` 没有目录 → 退化成一个**没有 pytest** 的解释器。模型花 5 轮排查测试运行器 | `_child_env` 把 venv 的 site-packages 放进 `PYTHONPATH` —— 保证**能力**而不是纠结名字解析（清空 PATH 也救不了跳板） |
+| 4 | pytest 向上找到 **harness 自己的** `pyproject.toml` | `rootdir: ...评测harness`、`configfile: pyproject.toml`，于是 `testpaths` / `addopts` / `filterwarnings=error::DeprecationWarning` 与五个插件全部生效 | `examples/toyrepo/pytest.ini` —— pytest 在这里停住，rootdir 就是工作目录 |
+
+第 2 条还牵出一个副作用值得单说：**注入的 bug 会以"未提交的改动"形式出现在
+`git diff` 里** —— 而那正好是一行答案。实测模型确实会跑 `git diff HEAD` 和
+`git log`，所以这不是假想的风险。现在工作区会把注入后的状态**提交为基线**，
+`git status` 干净、`git diff` 为空。顺带把"模型跑 `git log` 拿到的是
+**harness 仓库**的提交历史"这个更荒谬的问题一并解决了。
+
+#### 为什么四个门一个都没拦住
+
+这一节是这次最该记住的东西：
+
+| 门 | 为什么没响 |
+|---|---|
+| `pytest` | **全部测试都在仓库外的 `tmp_path` 里跑**。而 `git apply` 在仓库外会老实报错、在仓库内才静默跳过 —— 测试跑在哪个目录，决定了它测的是哪个 git |
+| `tests/e2e/test_codefix_outcome.py` | 它**手写**了一份 suite 文件（自己把 `source` 填对了），于是从没走过生成出来的 `case.yaml` |
+| `tests/suites/test_cases_are_solvable.py` | 它验的是"补丁 + 隐藏测试能否互相解开"，用的是 `sys.executable` 与自建的临时仓库 —— **完全绕开了被测的那条装配路径** |
+| `lint-imports` / `ruff` / `pyright` | 它们看的是代码结构与依赖边，而这里坏的是**配置与运行时环境** |
+
+**结论**：`tmp_path` 让测试彼此隔离、可重复，这是对的；
+但它同时**抹掉了"默认配置"**。而默认配置恰恰是唯一会被用户跑到的那份。
+现在补了三条锚点测试（`test_the_agent_starts_with_a_populated_workspace`、
+`test_the_workspace_already_contains_the_bug`、
+`test_the_bug_is_applied_even_when_the_workdir_is_inside_the_repo`），
+最后一条**刻意**在仓库内的目录里跑 —— 那是唯一能覆盖真实配置的地方。
+
+### 2.8 其它
 
 - `CaseOutcome.golden_score` 硬编码只取 `TrajectoryMatcher` 的分
 - `sqlite` 读路径的 IO 锁是**绊线而非证明**（见 `tests/store/test_sqlite.py`
@@ -304,6 +436,10 @@ judge 有自己的沙箱，与 SUT 的 workspace 是两回事，
 | M11 | `Path.read_text()` 不传 `encoding` 用**本地**编码 | 中文 Windows 上是 GBK，读含中文的 UTF-8 文件当场 `UnicodeDecodeError` —— 而报错发生在**被测 agent 的脚本里**，看起来像"agent 改不动文件"，与用例要考的东西完全无关 |
 | M11 | 工作目录路径常量放进了 `store/layout.py` | `core` **看不见** `store`（层级表里 store 在 core 之上）—— `lint-imports` 直接红。**架构约束在这里是净收益**：它没有静默降级 |
 | M11 | `_run_case` 的 `finally` 里引用 `result.run_id` | `Run.execute()` 抛异常时 `result` 还没绑定 → finally 里抛 `NameError`，把真正的异常盖掉 |
+| M11 | `_apply_edit` 是唯一漏了 `newline="\n"` 的写盘点 | 整文件重写把 LF 变 CRLF → `git diff` 认为每行都变了 → **1 行改动生成 349 行补丁**。而它功能上完全正确（`git apply` 照样成功、双向验证照样过）—— 除非有人真去打开看，永远不会被发现 |
+| M11 | 工作目录成为 git 仓库后，`rmtree` 删不掉只读的 `.git/objects/**` | `PermissionError: [WinError 5]`。**重试救不了只读位** —— 它不会自己消失，必须显式 `chmod`。与"文件被占用"是两种成因，`LocalExecutor` 里那套重试对它无效 |
+| M11 | 沙箱里裸名 `python` 落到 uv 的 base 解释器 | 见 §2.7 第 3 条 |
+| M11 | `_load_suite_dir` 忘了设 `workspace.source` | 见 §2.7 第 1 条 |
 
 ---
 
