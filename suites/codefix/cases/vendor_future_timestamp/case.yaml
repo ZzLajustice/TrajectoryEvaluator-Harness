@@ -1,0 +1,41 @@
+# vendor_future_timestamp —— 由 scripts/build_cases.py 生成，不要手改。
+#
+# 改题面/补丁/隐藏测试请改那个脚本里的数据表，然后重跑它
+# （它会重新生成并**逐条验证可解性**）。
+case_id: vendor_future_timestamp
+tier: hard
+tags: [vendored, real-repo, src-layout]
+task:
+  case_id: vendor_future_timestamp
+  prompt: |
+      用户报告：一台服务器的时间被 NTP 往回校正了几分钟之后，用它先前签发的令牌会**一直有效**下去 —— 直到真实时间追上那个偏差为止。
+      
+      这不该发生：校验时若令牌内嵌的时间戳落在**将来**，它应当判过期（`SignatureExpired`），而不是被当作有效签名放行。
+      
+      这个仓库是个独立的小库，请先摸清它的结构再改。修完跑一遍仓库自带的测试确认没有弄坏别的。
+# `source` 相对**仓库根**写（用例要入库，不能写死绝对路径）；
+# 加载器会把它解析成绝对路径。
+#
+# ★ 这一行漏掉的后果不是报错，而是**工作目录是空的**：
+#   没有东西可拷 → 补丁的目标文件不存在 → 而 `git apply` 在 git 仓库
+#   内部对目标不存在的补丁打出 "Skipped patch" 后**返回 0**。
+#   于是 SUT 对着空目录干活，报告上写"模型不会修 bug"。
+workspace:
+  kind: copy
+  source: examples/vendor/itsdangerous-c30678d
+expected_failure_modes: []
+hidden_tests: tests/test_hidden.py
+graders:
+  - name: OutcomeGrader
+    config:
+      timeout_s: 180.0
+  # 过程分的来源。`expected` **不写在这里** —— 它由加载器从
+  # `golden.yaml` 注入（见 suite.py::_resolve_golden）。
+  # 两处都写必然漂移，而漂移的方向恰好是"报告里的过程分与人对不上"。
+  - name: TrajectoryMatcher
+    config:
+      mode: in_order
+      tool_args_match_mode: ignore
+  - name: FailureClassifier
+    config:
+      expected_modes: []

@@ -1,0 +1,41 @@
+# vendor_date_signed_type —— 由 scripts/build_cases.py 生成，不要手改。
+#
+# 改题面/补丁/隐藏测试请改那个脚本里的数据表，然后重跑它
+# （它会重新生成并**逐条验证可解性**）。
+case_id: vendor_date_signed_type
+tier: hard
+tags: [vendored, real-repo, src-layout]
+task:
+  case_id: vendor_date_signed_type
+  prompt: |
+      用户报告：捕获 `BadTimeSignature` 之后想记下"这个令牌是什么时候签的"，于是读了它的 `date_signed` —— 文档说它是 `datetime`，但在**签名校验失败**的那条路径上拿到的不是，照着文档用（`strftime` / `isoformat`）会崩。
+      
+      类型不符本身不抛异常，它会在调用方离得很远的地方炸，那时已经看不出根因在这里。请让它在所有情况下都符合文档。
+      
+      这个仓库是个独立的小库，请先摸清它的结构再改。修完跑一遍仓库自带的测试确认没有弄坏别的。
+# `source` 相对**仓库根**写（用例要入库，不能写死绝对路径）；
+# 加载器会把它解析成绝对路径。
+#
+# ★ 这一行漏掉的后果不是报错，而是**工作目录是空的**：
+#   没有东西可拷 → 补丁的目标文件不存在 → 而 `git apply` 在 git 仓库
+#   内部对目标不存在的补丁打出 "Skipped patch" 后**返回 0**。
+#   于是 SUT 对着空目录干活，报告上写"模型不会修 bug"。
+workspace:
+  kind: copy
+  source: examples/vendor/itsdangerous-526b1ea
+expected_failure_modes: []
+hidden_tests: tests/test_hidden.py
+graders:
+  - name: OutcomeGrader
+    config:
+      timeout_s: 180.0
+  # 过程分的来源。`expected` **不写在这里** —— 它由加载器从
+  # `golden.yaml` 注入（见 suite.py::_resolve_golden）。
+  # 两处都写必然漂移，而漂移的方向恰好是"报告里的过程分与人对不上"。
+  - name: TrajectoryMatcher
+    config:
+      mode: in_order
+      tool_args_match_mode: ignore
+  - name: FailureClassifier
+    config:
+      expected_modes: []

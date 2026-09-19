@@ -49,24 +49,51 @@ CASES_DIR = OUT / "cases"
 
 @dataclass(frozen=True)
 class Case:
-    """一条用例的全部数据。"""
+    """一条用例的全部数据。
+
+    ## 两种 bug 来源，只能选一种
+
+    | | Track A（`bug_*` / `trap_*`） | Track B（`vendor_*`） |
+    |---|---|---|
+    | 来源 | `file` + `fixed` + `buggy`：把源码里的一段字符串对调 | `revert_patch`：**反向一个真实的上游 commit** |
+    | 隐藏测试 | `what` + `imports` + `body`，套共享 header 渲染 | `hidden_source`：手写的整份文件，原样拷贝 |
+    | 源树 | `examples/toyrepo`（默认） | `examples/vendor/<repo>-<sha>` |
+
+    两条路都汇进同一个 `_verify`：注入 bug 后隐藏测试必须失败、
+    打上参考修复后必须通过。**这才是「可解性」的唯一保证** ——
+    哪条路来的不重要。
+    """
 
     case_id: str
     tier: str
     #: 给被测 agent 的任务描述
     prompt: str
-    #: 被改的文件（相对 toyrepo 根）
-    file: str
-    #: **修复后**的那段源码（toyrepo 里现在的样子 = 替换的目标）
-    fixed: str
+
+    # ---- Track A：字符串对调 ----
+    #: 被改的文件（相对源树根）
+    file: str = ""
+    #: **修复后**的那段源码（源树里现在的样子 = 替换的目标）
+    fixed: str = ""
     #: 注入的 bug 版本
-    buggy: str
+    buggy: str = ""
     #: 隐藏测试的 import 段（放在共享 header 之后）
-    imports: str
+    imports: str = ""
     #: 隐藏测试的用例体
-    body: str
+    body: str = ""
     #: 隐藏测试文件顶部的说明
-    what: str
+    what: str = ""
+
+    # ---- Track B：反向一个上游补丁 ----
+    #: 上游那个 commit 的补丁（相对仓库根）。给出它时：
+    #: `bug.patch` = 它的反向，`fix.patch` = 它本身，`file`/`fixed`/`buggy` 都不用。
+    revert_patch: str = ""
+    #: 手写的隐藏测试（相对仓库根）。给出它时原样拷贝，
+    #: `what`/`imports`/`body` 都不用 —— Track B 的测试不套 csvlite 的 header。
+    hidden_source: str = ""
+
+    # ---- 两者的公共项 ----
+    #: 被拷贝进工作目录的源树（相对仓库根）。
+    source: str = "examples/toyrepo"
     expected_failure_modes: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
     #: 写进 `fixture/` 的场景文件（相对路径 → 内容）
@@ -764,7 +791,86 @@ def test_selection_still_works_after_the_fix():
 ''',
         tags=("cross-module", "column-order", "regression-prone"),
     ),
+    # ==================== Track B：真实 OSS 仓库（2）====================
+    #
+    # ★ 这两条的 bug 不是"把 A 换成 B"，而是**反向一个真实的上游修复**。
+    #
+    # 为什么值得单独做一条轨道：Track A 的 17 条都跑在自建的 400 行玩具库上，
+    # 而"harness 只在玩具上跑得通"是这类项目最容易被质疑的一点。
+    # 这两条跑的是 pallets/itsdangerous 的真实源码与真实测试套件
+    # （415 / 416 条可见测试），补丁是上游那次修复本身。
+    #
+    # 上游、修订、许可证与信任链见 `examples/upstream/README.md`
+    # 与 `examples/vendor/itsdangerous-*/VENDOR.md`。
+    Case(
+        case_id="vendor_future_timestamp",
+        tier="hard",
+        prompt="用户报告：一台服务器的时间被 NTP 往回校正了几分钟之后，"
+               "用它先前签发的令牌会**一直有效**下去 —— 直到真实时间追上"
+               "那个偏差为止。\n\n"
+               "这不该发生：校验时若令牌内嵌的时间戳落在**将来**，"
+               "它应当判过期（`SignatureExpired`），而不是被当作有效签名放行。\n\n"
+               "这个仓库是个独立的小库，请先摸清它的结构再改。"
+               "修完跑一遍仓库自带的测试确认没有弄坏别的。",
+        source="examples/vendor/itsdangerous-c30678d",
+        revert_patch="examples/upstream/vendor_future_timestamp/upstream_fix.patch",
+        hidden_source="examples/upstream/vendor_future_timestamp/test_hidden.py",
+        tags=("vendored", "real-repo", "src-layout"),
+    ),
+    Case(
+        case_id="vendor_date_signed_type",
+        tier="hard",
+        prompt="用户报告：捕获 `BadTimeSignature` 之后想记下"
+               "\"这个令牌是什么时候签的\"，于是读了它的 `date_signed` —— "
+               "文档说它是 `datetime`，但在**签名校验失败**的那条路径上"
+               "拿到的不是，照着文档用（`strftime` / `isoformat`）会崩。\n\n"
+               "类型不符本身不抛异常，它会在调用方离得很远的地方炸，"
+               "那时已经看不出根因在这里。请让它在所有情况下都符合文档。\n\n"
+               "这个仓库是个独立的小库，请先摸清它的结构再改。"
+               "修完跑一遍仓库自带的测试确认没有弄坏别的。",
+        source="examples/vendor/itsdangerous-526b1ea",
+        revert_patch="examples/upstream/vendor_date_signed_type/upstream_fix.patch",
+        hidden_source="examples/upstream/vendor_date_signed_type/test_hidden.py",
+        tags=("vendored", "real-repo", "src-layout"),
+    ),
 ]
+
+
+def _validate_table() -> None:
+    """★ 数据表本身的自检 —— 在**生成任何东西之前**跑。
+
+    没有它，一条只写了一半的用例会一路走到 `_generate` 才炸，
+    而那时的报错是 `KeyError` / 空 diff / 补丁打不上 —— 三种都指不回
+    "表里少写了一个字段"这个真因。
+
+    这里的每条规则都对应一种**静默产错**的方式：
+    两种 bug 来源都不给 → 空补丁；两种都给 → 后一种悄悄赢。
+    """
+    for case in CASES:
+        swap = bool(case.file and case.fixed)
+        revert = bool(case.revert_patch)
+        if swap == revert:
+            raise RuntimeError(
+                f"{case.case_id}: 恰好要给一种 bug 来源 —— "
+                f"`file`+`fixed`（字符串对调）或 `revert_patch`（反向上游补丁），"
+                f"实际给了 {'两种' if swap else '零种'}。")
+        if bool(case.hidden_source) == bool(case.body):
+            raise RuntimeError(
+                f"{case.case_id}: 恰好要给一种隐藏测试 —— "
+                f"`hidden_source`（手写的整份文件）或 `what`+`imports`+`body`"
+                f"（套共享 header 渲染），实际给了 "
+                f"{'两种' if case.hidden_source else '零种'}。")
+        if case.hidden_source and not (REPO / case.hidden_source).is_file():
+            raise RuntimeError(
+                f"{case.case_id}: hidden_source 不存在：{case.hidden_source}")
+        if case.revert_patch and not (REPO / case.revert_patch).is_file():
+            raise RuntimeError(
+                f"{case.case_id}: revert_patch 不存在：{case.revert_patch}")
+        if not (REPO / case.source).is_dir():
+            raise RuntimeError(f"{case.case_id}: source 树不存在：{case.source}")
+
+
+_validate_table()
 
 
 # --------------------------------------------------------------------------
@@ -802,8 +908,12 @@ def _normalise_to_lf(root: Path) -> None:
 
 
 def _fresh_repo(dest: Path, case: Case) -> None:
-    """Toyrepo 的副本 + 该用例的 fixture，并初始化一个 git 仓库。"""
-    shutil.copytree(TOYREPO, dest)
+    """源树的副本 + 该用例的 fixture，并初始化一个 git 仓库。
+
+    源树默认是 `examples/toyrepo`；Track B 的用例指向
+    `examples/vendor/<repo>-<sha>`（已被**修复**的那棵树）。
+    """
+    shutil.copytree(REPO / case.source, dest)
     _normalise_to_lf(dest)
     for rel, content in case.fixture.items():
         target = dest / rel
@@ -820,6 +930,11 @@ def _fresh_repo(dest: Path, case: Case) -> None:
 
 
 def _hidden_test_source(case: Case) -> str:
+    if case.hidden_source:
+        # Track B：整份文件原样拷贝。它不套 csvlite 的 header ——
+        # 那个 header 是用来"往上找到含 `csvlite/` 的那一层"的，
+        # 而 vendored 仓库是 `src/` 布局，导入根不同。
+        return (REPO / case.hidden_source).read_text(encoding="utf-8")
     return (_HIDDEN_HEADER.format(case_id=case.case_id, what=case.what,
                                   imports=case.imports)
             + case.body)
@@ -838,6 +953,16 @@ def _pytest(repo: Path) -> subprocess.CompletedProcess[str]:
 
 
 def _apply_edit(repo: Path, case: Case) -> None:
+    if case.revert_patch:
+        # Track B：bug 态 = 上游那次修复的**反向**。
+        #
+        # 于是 bug.patch 就是那个 commit 的反向，必然打得上去 ——
+        # 它不是我拼出来的，是上游当时真正改过的那几行。
+        # 这也是为什么 Track B 不需要 `fixed`/`buggy` 两个字符串：
+        # 判据已经存在于补丁本身。
+        _git(repo, "apply", "-R", str(REPO / case.revert_patch))
+        return
+
     target = repo / case.file
     text = target.read_text(encoding="utf-8")
     if case.fixed not in text:
@@ -859,17 +984,31 @@ def _apply_edit(repo: Path, case: Case) -> None:
 #: 超出说明 diff 变成了整文件替换 —— 而那不是补丁该有的形状。
 _PATCH_LINE_SLACK = 12
 
+#: Track B 的补丁**改不动**预期行数（它是上游的 commit，不是我拼出来的），
+#: 所以改查绝对上限。upstream 这两个补丁实际是 33 / 44 行改动；
+#: 而换行灾难会让它涨到几百行（`timed.py` + `test_timed.py` 全文件替换），
+#: 100 这个上限两边都离得很远。
+_PATCH_LINE_CEILING = 100
+
 
 def _check_patch_is_minimal(case: Case, patch: str) -> None:
     """补丁必须是**局部**的，不能是整文件替换。
 
     这是换行被悄悄改写时唯一会响的警报：`git apply` 不在乎，
-    双向验证也不在乎，只有人打开补丁时才看得出来 —— 而没人会打开 17 个补丁。
+    双向验证也不在乎，只有人打开补丁时才看得出来 —— 而没人会打开 19 个补丁。
     """
     changed = sum(
         1 for line in patch.splitlines()
         if line[:1] in "+-" and not line.startswith(("+++", "---"))
     )
+    if case.revert_patch:
+        if changed > _PATCH_LINE_CEILING:
+            raise RuntimeError(
+                f"{case.case_id}: the reverted upstream patch changes "
+                f"{changed} lines (ceiling {_PATCH_LINE_CEILING}). The patch "
+                f"on disk is not the upstream commit — most likely a "
+                f"line-ending change turned it into a whole-file rewrite.")
+        return
     expected = (case.fixed.count("\n") + case.buggy.count("\n") + 2)
     if changed > expected + _PATCH_LINE_SLACK:
         raise RuntimeError(
@@ -994,7 +1133,7 @@ task:
 #   于是 SUT 对着空目录干活，报告上写"模型不会修 bug"。
 workspace:
   kind: copy
-  source: examples/toyrepo
+  source: {case.source}
 {sut_block}expected_failure_modes: {modes}
 hidden_tests: tests/test_hidden.py
 graders:
@@ -1048,7 +1187,7 @@ defaults:
   middlewares: [permission, sandbox, budget, telemetry]
   concurrency: 4
 
-  # judge 默认关闭。17 条用例 × judge 会让一次全量 run 的 judge 成本
+  # judge 默认关闭。19 条用例 × judge 会让一次全量 run 的 judge 成本
   # 超过 SUT 本身；要开就在 CLI 上显式打开。
 '''
 

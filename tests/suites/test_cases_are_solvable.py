@@ -43,7 +43,6 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 SUITES = REPO / "suites"
-TOYREPO = REPO / "examples" / "toyrepo"
 CASE_FILES = sorted(SUITES.rglob("cases/*/case.yaml"))
 
 
@@ -70,10 +69,17 @@ def _materialise(case_yaml: Path, dest: Path) -> dict:
     ★ 顺序必须与 `core/workspace.py::Workspace.setup` 一致：
     拷贝 source → 覆写 overlay(fixture) → 打 patch。
     顺序错了的话，这条测试验的是一个 SUT 永远不会看到的树。
+
+    ★ 源树**从 case.yaml 读**，不写死 toyrepo。写死的话 Track B
+    （`vendor_*`，跑在 `examples/vendor/itsdangerous-*` 上）会拿到一份
+    toyrepo 的副本，然后 `bug.patch` 打不上 —— 而症状是
+    "有两条用例的补丁坏了"，指不回"这里读错了 source"。
     """
     case = yaml.safe_load(case_yaml.read_text(encoding="utf-8"))
     case_dir = case_yaml.parent
-    shutil.copytree(TOYREPO, dest)
+    source = REPO / case["workspace"]["source"]
+    assert source.is_dir(), f"{case_dir.name}: source tree not found: {source}"
+    shutil.copytree(source, dest)
     fixture = case_dir / "fixture"
     if fixture.is_dir():
         shutil.copytree(fixture, dest, dirs_exist_ok=True)

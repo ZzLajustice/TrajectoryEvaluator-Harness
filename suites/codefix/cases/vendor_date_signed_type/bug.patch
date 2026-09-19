@@ -1,0 +1,66 @@
+diff --git a/CHANGES.rst b/CHANGES.rst
+index 2915aaa..3cec4ca 100644
+--- a/CHANGES.rst
++++ b/CHANGES.rst
+@@ -17,8 +17,6 @@ Unreleased
+ -   If a signature has an age less than 0, it will raise
+     ``SignatureExpired`` rather than appearing valid. This can happen if
+     the timestamp offset is changed. :issue:`126`
+--   ``BadTimeSignature.date_signed`` is always a ``datetime`` object
+-    rather than an ``int`` in some cases. :issue:`124`
+ 
+ 
+ Version 1.1.0
+diff --git a/src/itsdangerous/timed.py b/src/itsdangerous/timed.py
+index 178322f..656bc16 100644
+--- a/src/itsdangerous/timed.py
++++ b/src/itsdangerous/timed.py
+@@ -86,9 +86,6 @@ class TimestampSigner(Signer):
+         # Signature is *not* okay. Raise a proper error now that we have
+         # split the value and the timestamp.
+         if sig_error is not None:
+-            if timestamp is not None:
+-                timestamp = self.timestamp_to_datetime(timestamp)
+-
+             raise BadTimeSignature(str(sig_error), payload=value, date_signed=timestamp)
+ 
+         # Signature was okay but the timestamp is actually not there or
+diff --git a/tests/test_itsdangerous/test_timed.py b/tests/test_itsdangerous/test_timed.py
+index 82b4253..18de741 100644
+--- a/tests/test_itsdangerous/test_timed.py
++++ b/tests/test_itsdangerous/test_timed.py
+@@ -54,7 +54,6 @@ class TestTimestampSigner(FreezeMixin, TestSigner):
+             signer.unsign(signed)
+ 
+         assert "missing" in str(exc_info.value)
+-        assert exc_info.value.date_signed is None
+ 
+     def test_malformed_timestamp(self, signer):
+         other = Signer("secret-key")
+@@ -64,25 +63,14 @@ class TestTimestampSigner(FreezeMixin, TestSigner):
+             signer.unsign(signed)
+ 
+         assert "Malformed" in str(exc_info.value)
+-        assert exc_info.value.date_signed is None
+ 
+     def test_future_age(self, signer):
+         signed = signer.sign("value")
+ 
+         with freeze_time("1971-05-31"):
+-            with pytest.raises(SignatureExpired) as exc_info:
++            with pytest.raises(SignatureExpired):
+                 signer.unsign(signed, max_age=10)
+ 
+-        assert isinstance(exc_info.value.date_signed, datetime)
+-
+-    def test_sig_error_date_signed(self, signer):
+-        signed = signer.sign("my string").replace(b"my", b"other", 1)
+-
+-        with pytest.raises(BadTimeSignature) as exc_info:
+-            signer.unsign(signed)
+-
+-        assert isinstance(exc_info.value.date_signed, datetime)
+-
+ 
+ class TestTimedSerializer(FreezeMixin, TestSerializer):
+     @pytest.fixture()

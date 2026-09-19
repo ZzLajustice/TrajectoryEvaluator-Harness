@@ -1,0 +1,50 @@
+diff --git a/CHANGES.rst b/CHANGES.rst
+index feab627..1cf4123 100644
+--- a/CHANGES.rst
++++ b/CHANGES.rst
+@@ -7,6 +7,9 @@ Unreleased
+ -   ``datetime`` values are timezone-aware with ``timezone.utc``. Code
+     using ``TimestampSigner.unsign(return_timestamp=True)`` or
+     ``BadTimeSignature.date_signed`` may need to change. :issue:`150`
++-   If a signature has an age less than 0, it will raise
++    ``SignatureExpired`` rather than appearing valid. This can happen if
++    the timestamp offset is changed. :issue:`126`
+ 
+ 
+ Version 1.1.0
+diff --git a/src/itsdangerous/timed.py b/src/itsdangerous/timed.py
+index 2ae0261..656bc16 100644
+--- a/src/itsdangerous/timed.py
++++ b/src/itsdangerous/timed.py
+@@ -104,6 +104,13 @@ class TimestampSigner(Signer):
+                     date_signed=self.timestamp_to_datetime(timestamp),
+                 )
+ 
++            if age < 0:
++                raise SignatureExpired(
++                    f"Signature age {age} < 0 seconds",
++                    payload=value,
++                    date_signed=self.timestamp_to_datetime(timestamp),
++                )
++
+         if return_timestamp:
+             return value, self.timestamp_to_datetime(timestamp)
+ 
+diff --git a/tests/test_itsdangerous/test_timed.py b/tests/test_itsdangerous/test_timed.py
+index 68a8c74..18de741 100644
+--- a/tests/test_itsdangerous/test_timed.py
++++ b/tests/test_itsdangerous/test_timed.py
+@@ -64,6 +64,13 @@ class TestTimestampSigner(FreezeMixin, TestSigner):
+ 
+         assert "Malformed" in str(exc_info.value)
+ 
++    def test_future_age(self, signer):
++        signed = signer.sign("value")
++
++        with freeze_time("1971-05-31"):
++            with pytest.raises(SignatureExpired):
++                signer.unsign(signed, max_age=10)
++
+ 
+ class TestTimedSerializer(FreezeMixin, TestSerializer):
+     @pytest.fixture()

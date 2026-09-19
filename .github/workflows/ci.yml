@@ -71,7 +71,7 @@ jobs:
 
       # `-m 'not live'` 由 pyproject 的 addopts 保证；真模型测试默认跳过。
       # 这一步同时覆盖 tests/suites/test_cases_are_solvable.py ——
-      # 它会把 17 条用例各跑一遍（注入 bug 必须失败、打上参考修复必须通过）。
+      # 它会把 19 条用例各跑一遍（注入 bug 必须失败、打上参考修复必须通过）。
       - name: 测试（离线，零 LLM 调用）
         run: uv run pytest
 

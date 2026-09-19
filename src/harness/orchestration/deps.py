@@ -111,7 +111,7 @@ class SuiteCostExceeded(RuntimeError):
     """suite 级成本上限被击穿，剩余 case 未启动。映射到退出码 3。
 
     **不是 per-case 的失败**：`Budget.max_usd` 已经管住单条 case 跑飞；
-    这条管的是"17 条用例一共花了多少"。两者的报警对象不同。
+    这条管的是"整个 suite 一共花了多少"。两者的报警对象不同。
     """
 
 

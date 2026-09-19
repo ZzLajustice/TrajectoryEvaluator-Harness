@@ -372,6 +372,22 @@ def _resolve_golden(suite: Suite) -> None:
             continue
         path = case.source_dir / "golden.yaml"
         if not path.is_file():
+            # ★ 没有 golden ≠ 崩溃。`TrajectoryMatcher.__init__` 把 `expected`
+            #   设成**必填**是有意的：手写 suite 时把它拼错要当场炸，
+            #   而不是静默判 SKIPPED。所以"这条用例没有参考路径"必须由
+            #   **这里**表达成一个空的 expected，再由 `evaluate()` 转 SKIPPED。
+            #
+            #   这里曾经只是 `continue` —— 于是配置里少了 `expected`，
+            #   构造时就 `TypeError: missing 1 required keyword-only argument`。
+            #   上面那句"没有它时这条用例不挂过程分"写在文档里，
+            #   但在行为上不成立，而 17 条用例**全都有 golden**，
+            #   所以这条分支从来没被执行过。
+            #
+            #   实测（2026-09-18）：Track B 两条没有 golden 的用例第一次真跑，
+            #   `TrajectoryMatcher` 直接崩（状态 ERROR 而不是 SKIPPED）。
+            for grader in case.graders:
+                if grader.name == "TrajectoryMatcher":
+                    grader.config.setdefault("expected", [])
             continue
         doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         if not isinstance(doc, dict):

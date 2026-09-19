@@ -31,5 +31,5 @@ defaults:
   middlewares: [permission, sandbox, budget, telemetry]
   concurrency: 4
 
-  # judge 默认关闭。17 条用例 × judge 会让一次全量 run 的 judge 成本
+  # judge 默认关闭。19 条用例 × judge 会让一次全量 run 的 judge 成本
   # 超过 SUT 本身；要开就在 CLI 上显式打开。

@@ -138,7 +138,14 @@ src = ["src"]
 # 而每次重新 vendor 都要再改一遍，纯噪音。
 #
 # 它与 `suites/` 的排除理由不同：那个是"生成物"，这个是"别人的代码"。
-extend-exclude = ["suites", "examples/vendor"]
+#
+# `examples/upstream/` 的排除理由**与 `suites/` 相同**：那里的 `test_hidden.py`
+# 是 Track B 隐藏测试的源文件，形状与生成的完全一样
+# （先 `sys.path.insert(找到 itsdangerous 的那一层)`，再 import 被测包），
+# 所以按包内代码的规则检查它只会稳定地报 E402。它会被生成器原样拷进
+# `suites/codefix/cases/vendor_*/tests/test_hidden.py` —— 也就是同一份文件
+# 在被排除的目录与不被排除的目录里各有一份，只有一份报错才是奇怪的事。
+extend-exclude = ["suites", "examples/vendor", "examples/upstream"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "D", "I", "B", "DTZ", "TID251", "PLE", "SIM101"]
