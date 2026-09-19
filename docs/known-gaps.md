@@ -128,7 +128,7 @@ M11 收尾时拿真模型跑了一遍 `suites/codefix`。**第一次跑出来的
 
 | 声称 | 证据强度 |
 |---|---|
-| 17 条用例**可解**（bug 抓得到、参考修复能过） | **强** —— 生成时逐条双向验证 + CI 里对已提交产物再验一遍 |
+| 19 条用例**可解**（bug 抓得到、参考修复能过） | **强** —— 生成时逐条双向验证 + CI 里对已提交产物再验一遍 |
 | 装配链路能真的把带 bug 的工作区交给 SUT | **强** —— 三条锚点测试，其中一条刻意在仓库内跑（§2.7） |
 | `OutcomeGrader` 能判对错 | **中** —— 13 条 e2e 用例（SUT 是 `FakeProvider`）+ 真模型冒烟 |
 | **17 条用例全量真模型结果** | **有数据了**，见 §1.6.1 |
@@ -464,7 +464,7 @@ judge 有自己的沙箱，与 SUT 的 workspace 是两回事，
 | **`contracts.CommandRunner`**（第二处依赖倒置） | 结果级判据只存在于工作目录里，而评测器不许 import `core` 拿执行器。与 `JudgeClient` 同构：协议住 L0，真实实现由组装层注入 |
 | **`core/workspace.py::workspace_root`** | 组装层要在目录**外面**重新指向同一处（跑隐藏测试）。写成两处字面量的话，改一处漏一处会去**空目录**里跑测试并拿到"全部通过" |
 | **`contracts/pricing.py`** | `Usage.cost_usd` 对真实模型恒为 0 → 成本门禁静默失效（见 §2.5） |
-| **`scripts/build_cases.py`** | 17 条用例的补丁如果手写，"改了一处漏了另一处"会产出**与 bug 不互逆**的 fix.patch —— 而它不报错，只是把树改到第三种状态 |
+| **`scripts/build_cases.py`** | 19 条用例的补丁如果手写，"改了一处漏了另一处"会产出**与 bug 不互逆**的 fix.patch —— 而它不报错，只是把树改到第三种状态 |
 | **`tests/e2e/test_codefix_outcome.py`** | 结果级评测跨了五层（改 keep → 建目录 → agent 改代码 → 拷隐藏测试 → 造不 setup 的 Workspace → 跑 pytest → 清理）。每环单独测都过、连起来不工作，是这类链路的典型失败方式 |
 
 ### 3.3 实现过程中修掉的真 bug
@@ -491,6 +491,7 @@ judge 有自己的沙箱，与 SUT 的 workspace 是两回事，
 | M11 | 工作目录成为 git 仓库后，`rmtree` 删不掉只读的 `.git/objects/**` | `PermissionError: [WinError 5]`。**重试救不了只读位** —— 它不会自己消失，必须显式 `chmod`。与"文件被占用"是两种成因，`LocalExecutor` 里那套重试对它无效 |
 | M11 | 沙箱里裸名 `python` 落到 uv 的 base 解释器 | 见 §2.7 第 3 条 |
 | M11 | `_load_suite_dir` 忘了设 `workspace.source` | 见 §2.7 第 1 条 |
+| M11 | 没有 `golden.yaml` 时 `TrajectoryMatcher` **不是 SKIP 而是崩溃** | `_resolve_golden` 在没有 golden 时只 `continue`，于是配置里少了 `expected` —— 而 `TrajectoryMatcher.__init__` 把它设成了**必填**（有意必填：手写 suite 拼错名字要当场炸）。结果是构造期 `TypeError: missing 1 required keyword-only argument`，评测器报 **ERROR 而不是 SKIPPED**。**17 条用例全都有 golden，所以这条分支从来没被执行过** —— 函数 docstring 里那句"没有它时这条用例不挂过程分"只写在文档里，行为上不成立。Track B 两条没有 golden 的用例第一次真跑就把它撞出来了（§4.2.1）。修法：没有 golden 时注入空的 `expected`，由 `evaluate()` 转成 SKIPPED<br>**教训**：这是一个"文档描述的分支从未被执行"的典型 —— 与 §2.7 的四处环境泄漏同源。它们能长期潜伏，是因为**所有现有数据都走了另一条分支** |
 
 ---
 
@@ -501,70 +502,124 @@ judge 有自己的沙箱，与 SUT 的 workspace 是两回事，
 - [x] `adapters/base.py`（`TrajectorySource` 协议）+ `adapters/otel_jsonl.py`
 - [x] `events/otel.py`（OTel 投影，dual-emit 新旧 token 属性名）
 - [x] `tests/test_architecture.py`（纯 ast，与 `lint-imports` 刻意冗余）
-- [x] 17 条用例集（easy 5 / medium 7 / hard 5，含 4 条过程陷阱）
+- [x] Track A 17 条用例（easy 5 / medium 7 / hard 5，含 4 条过程陷阱）
 - [x] `examples/toyrepo/`（`csvlite`，551 行 + 43 条自带可见测试）
 - [x] `scripts/build_cases.py`（生成补丁 + **双向验证可解性**）
 - [x] `tests/suites/test_cases_are_solvable.py`
 - [x] README
 - [x] `.github/workflows/ci.yml`（四个门 + 报告 artifact；**只挂 Windows**，理由见 §4.2）
 - [x] （计划外但必需）`OutcomeGrader` + `contracts.CommandRunner` —— 见 §3.2
+- [x] **Track B：两条真实 OSS 仓库用例** —— 见 §4.2.1
 
 ### 4.2 M11 未做
 
 | 项 | 为什么没做 | 影响 |
 |---|---|---|
-| **Track B：真实 OSS 仓库用例** | **卡在权限确认上，不是技术上做不到** —— 见下面 §4.2.1 | 17 条仍全部来自自建 toyrepo。"harness 不只能在玩具上跑"这个论点目前**没有证据**。这是答辩时最可能被追问的一点 |
+| ~~每 case 的 `golden.yaml` + `tests/golden/` 自检~~ | **已做** —— 从真跑录制、人工审核，见 §1.6.4 | codefix suite 现在挂了 `TrajectoryMatcher`；但**多条 alternative 的匹配未实现**（多于一条会在加载期报错，不静默取第一条） |
+| **`golden` 的留出验证** | 现有 golden 是在推导它的那批 run 上评估的，17/17 一致属于循环论证（§1.6.4） | 需要一次换模型或重跑的 run 才能谈预测力 |
+| **Track B 的 golden** | golden 的来源是**真实 run 的录制**，而这两条还没跑过真模型（见 §4.2.1） | 这两条目前只有结果级判据。补录的代价是一次真跑 |
+| **陷阱在已上膛状态下的真模型表现** | 机制修好了，但只用假 provider 验过（§1.6.5） | 「会触发压缩」是确定的；「触发后模型会不会答错」没有数据 |
+| **Linux CI 覆盖** | workflow 只挂 `windows-latest`。全部开发与验证都在 Windows 上，几条硬约束也是 Windows 特有的（ProactorEventLoop、`taskkill /F /T`）—— 挂一个 ubuntu job 等于**声称**这份代码在 Linux 上也能跑，而没有人跑过 | CI 绿不代表跨平台可移植。要加 Linux 覆盖，先跑通再往 workflow 里加一行，不要凭猜测写 |
+| **`.gitattributes`（统一换行）** | 会一次性改动全部文件的换行，diff 很大；不属于本轮范围 | 仓库里仍混着 CRLF/LF（见 §3.3 M11 第一条） |
 
-#### 4.2.1 Track B 的准确状态与完成配方
+#### 4.2.1 Track B：✅ 已完成（2026-09-18）
 
-**已经查清并在本地跑通到"只差执行"的一步**（`/tmp/tb_probe/`，未入库）：
+**做了什么**：两条用例，跑在 `pallets/itsdangerous` 的真实源码上，
+bug 是**上游两个真实 commit 的反向**：
 
-| 环节 | 状态 |
+| 用例 | 上游修订 | 反向掉的修复 | 可见测试 |
+|---|---|---|---|
+| `vendor_future_timestamp` | `c30678d` | 不再拒绝时间戳来自将来的签名（issue #126） | 415 条全过 |
+| `vendor_date_signed_type` | `526b1ea` | `BadTimeSignature.date_signed` 在某条错误分支里是 `int` 而非 `datetime`（issue #124） | 416 条全过 |
+
+生成器加了 `source` / `revert_patch` / `hidden_source` 三个字段：
+`bug.patch` = 上游 commit 的反向，`fix.patch` = 它本身。
+**补丁必然打得上去** —— 它就是那个 commit，不是我拼出来的。
+
+**信任链**（这是原先记的那个缺口，已消掉）：
+
+```
+PyPI sdist (sha256 与索引核对一致)  ==  gitee 镜像 clone@2.2.0  ==  examples/vendor/
+```
+
+gitee clone 与上游 sdist 的差异**纯粹是 `core.autocrlf`**（clone 在 Windows 上
+检出成 CRLF），归一化换行后逐字节相同；vendored 树与对应修订**归一化后 16/16 文件相同**。
+
+**验证**：两层，刻意不重合 ——
+`tests/suites/test_cases_are_solvable.py`（平行实现：自己搭工作目录）
+与 `tests/e2e/test_vendored_cases.py`（跑**真** suite / `Workspace` /
+`WorkspaceCommandRunner`）。后者一次性证掉四件事：vendored 树能被拷进去并
+`git apply` 上补丁、隐藏测试能在工作目录里 import 起 `src/` 布局的包、
+`WorkspaceCommandRunner` 真把 pytest 跑起来了、以及**修对了就判 PASS**。
+
+**顺带撞出一个潜伏的真 bug**：没有 `golden.yaml` 时 `TrajectoryMatcher`
+不是文档说的 SKIP，而是构造期 `TypeError` 崩溃 —— 见 §3.3。
+
+**仍然没有的**：这两条**没跑过真模型**，所以没有 golden（过程分不参与），
+也不知道模型能不能修。补它的代价是一次真跑。
+
+#### 4.2.2 网络受限环境下怎么拿到可信的上游历史（保留，供复用）
+
+这一步**不是**显而易见能成的：GitHub 443 不通。下次还要用，所以记下来。
+
+| 环节 | 结论 |
 |---|---|
 | 选仓库 | `pallets/itsdangerous` —— 纯 Python 1199 行、无运行时依赖、BSD-3 |
-| 拿源码 | GitHub 443 不通；**清华 PyPI 镜像通**，两个 sdist 的 sha256 与索引核对一致 |
-| 拿**提交历史** | GitHub 不通、`gitee.com/mirrors` **通**（631 个提交）。历史是必需的 —— 见下 |
-| 挑真 bugfix | 找到 5 个小的、自带测试改动的真修复 |
-| 冻结修订 | 每个 case 固定它自己的上游修订（把旧 fix 反向应用到新树时 hunk 会对不上，实测 4 个里只有 1 个能） |
-| vendor 落地 | 两棵树已复制到 `examples/vendor/`（211 KB，未跟踪） |
+| 拿**发布源码** | GitHub 不通；**清华 PyPI 镜像通**，sdist 的 sha256 可与索引公布的哈希逐一对上 |
+| 拿**提交历史** | GitHub 不通、`gitee.com/mirrors` **通**（631 个提交） |
+| 挑真 bugfix | 这一步最花时间 —— 见下 |
+| 冻结修订 | 每个 case 固定它自己的上游修订 |
 
 **为什么必须有提交历史**：只有发布级 diff 时拿不到"手术式"的真 bugfix。
 实测 `2.1.2 → 2.2.0` 的 diff 全是类型现代化（`_t.Union[X, Y]` → `X | Y`）
 与破坏性 API 删除，不是 bug —— 用它造出来的"case"是重构题，不是修 bug 题。
 
-**已选定的两个 case**（都是 `timed.py` 的真实修复，都带上游回归测试）：
+**为什么每个 case 冻结自己的修订**：把旧 fix 反向应用到**更新的**树上时，
+hunk 上下文对不上（后续提交改动了相邻行）。实测 4 个候选里只有 1 个能反向应用。
+所以两棵树各钉在它自己的修订上，而不是统一取最新版。
 
-| 上游修订 | 修复内容 | 上游回归测试 |
-|---|---|---|
-| `c30678d` | 时间戳来自未来（age < 0）时应当抛 `SignatureExpired`，而不是看起来有效 | `test_future_age` |
-| `526b1ea` | `BadTimeSignature.date_signed` 在某个错误分支里是 `int`，应当始终是 `datetime` | `test_sig_error_date_signed` 等 |
+**镜像的信任链怎么补上**（这是原先记的那个缺口）：
 
-**卡在哪**：运行 vendored 仓库的测试被权限分类器拦下了，理由是
-"用户没有点名这个外部来源"。这个拦截是**对的** —— 我不该擅自把第三方代码
-引进仓库再执行它。需要明确授权才能继续。
+```
+PyPI sdist (sha256 与索引核对一致)  ==  gitee clone@2.2.0  ==  examples/vendor/
+```
 
-**一个我没能消掉的完整性缺口**：PyPI 的两个 sdist 我核对过 sha256，
-但**差分补丁的来源是 `gitee.com/mirrors` 的 clone，没有与上游核对过哈希**。
-继续之前应当先核对（例如拿 PyPI sdist 的文件与 clone 同修订的文件逐个比）。
+gitee clone 与上游 sdist 的差异**纯粹是 `core.autocrlf`**（clone 在 Windows
+上检出成 CRLF），归一化换行后逐文件逐字节相同。这消掉了
+"补丁来自镜像、没与上游核对过"这一条。
 
-**怎么继续**（大约 30 分钟）：
-1. 明确授权：允许 vendor 这个仓库、并运行它的测试套件
-2. 核对 gitee clone 与上游的一致性（逐个文件哈希比对 PyPI sdist）
-3. 给它加 `conftest.py`（`src/` 布局在未安装环境下要能导入 —— 少了它 SUT 连测试都跑不起来，而症状会写成"模型不会修 bug"）
-4. 把生成的 `bug.patch`（该修复的反向）、`fix.patch`（上游修复本身）、
-   以及**上游回归测试**搬成隐藏测试
-5. 交给现有的 `tests/suites/test_cases_are_solvable.py` 双向验证 —— 无需新机制
-| ~~每 case 的 `golden.yaml` + `tests/golden/` 自检~~ | **已做** —— 从真跑录制、人工审核，见 §1.6.4 | codefix suite 现在挂了 `TrajectoryMatcher`；但**多条 alternative 的匹配未实现**（多于一条会在加载期报错，不静默取第一条） |
-| **`golden` 的留出验证** | 现有 golden 是在推导它的那批 run 上评估的，17/17 一致属于循环论证（§1.6.4） | 需要一次换模型或重跑的 run 才能谈预测力 |
-| **陷阱在已上膛状态下的真模型表现** | 机制修好了，但只用假 provider 验过（§1.6.5） | 「会触发压缩」是确定的；「触发后模型会不会答错」没有数据 |
-| **Linux CI 覆盖** | workflow 只挂 `windows-latest`。全部开发与验证都在 Windows 上，几条硬约束也是 Windows 特有的（ProactorEventLoop、`taskkill /F /T`）—— 挂一个 ubuntu job 等于**声称**这份代码在 Linux 上也能跑，而没有人跑过 | CI 绿不代表跨平台可移植。要加 Linux 覆盖，先跑通再往 workflow 里加一行，不要凭猜测写 |
-| **`.gitattributes`（统一换行）** | 会一次性改动全部文件的换行，diff 很大；不属于本轮范围 | 仓库里仍混着 CRLF/LF（见 §3.3 M11 第一条） |
+**与配方不同的一处，写明白**：原本打算把**上游自己的回归测试文件**
+（`tests/test_itsdangerous/test_timed.py`）整份搬成隐藏测试，实际**没有**那么做，
+而是针对每条 bug 写了聚焦的隐藏测试（理由与构法见
+`examples/upstream/README.md`）。两个具体原因：
+
+1. 那份文件依赖 `conftest.py` 的 fixture、`FreezeMixin`、跨模块 import 的
+   `TestSigner` —— 整份搬进来会把这些耦合一起搬进来
+2. 它是为"在它自己的仓库里跑"写的，不是为"在别人的工作目录里跑"写的
+
+**而这里有一条实测踩出来的坑，必须记住**：`vendor_date_signed_type` 的
+第二条隐藏测试，构法差一点就**没有牙齿**。上游引入的守卫是
+`if timestamp is not None`，它只在"签名失败 **且** 时间戳解析不出来"时生效；
+而"只坏时间戳段、签名仍有效"走的是**另一条分支**，与这次修复无关。
+实测确认：拿后者去测"把 `timestamp` 无条件喂给 `timestamp_to_datetime()`"
+这个过度修复，**照样全绿**。现在的构法是翻转签名最后一个字节
+（"令牌在传输里坏了一个字节"），能把那个过度修复打红。
+
+顺带一提：上游自己的测试**也没有**覆盖那个守卫 —— 它加的
+`assert date_signed is None` 落在 `sig_error is None` 的分支上。
 
 ### 4.3 最该优先补的三项（按性价比排序）
 
-1. **§1.6 —— 真模型跑一遍 17 条用例**。一次 run 就能同时产出：
-   §1.3 的失败模式命中率、§1.6 的难度分层是否合理、§1.2 的浏览器看报告。
+1. **§1.6 —— 真模型跑一遍全部 19 条用例**。一次 run 就能同时产出：
+   §1.3 的失败模式命中率、§1.6 的难度分层是否合理、§1.2 的浏览器看报告，
+   以及 Track B 两条的 golden（§4.2 里"Track B 的 golden"那一行）。
    成本约 5 分钟 / 数元。**这是投入产出比最高的一次验证。**
-2. **§4.2 的 Track B**。它是"通用性"这条论证链上唯一没有证据的环节。
-3. **`golden` + `TrajectoryMatcher` 进 codefix suite**。过程级评测的招牌
-   目前没有在主力用例集上出场。
+   Track B 加入后它多了一个新用途：**这两条是唯一能说明
+   "harness 不只能在玩具上跑"的证据**，而它们现在只被证明"可解"，
+   没有被证明"模型解得开"。
+2. **`golden` 的留出验证**（§1.6.4）。现有 17/17 一致是循环论证 ——
+   要谈预测力，必须有一次**没参与推导 golden 的 run**。
+   上面那次全量真跑正好就是。
+3. **Linux CI 覆盖**（§4.2 表格）。四个门全在 Windows 上跑过，
+   CI 也只挂 `windows-latest`；这不影响 demo，但它是"这份代码能不能移植"
+   这个问题的唯一答案来源。

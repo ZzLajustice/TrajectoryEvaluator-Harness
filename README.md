@@ -52,7 +52,7 @@ uv run harness run -s examples/hello.yaml --evaluate
 # 2) 真模型（key 只从环境变量或 .env 读，刻意没有 --api-key）
 uv run harness run -s examples/deepseek.yaml -m deepseek-flash --provider deepseek
 
-# 3) 17 条 codefix 用例 + 隐藏验收测试 + 自包含 HTML 报告
+# 3) 19 条 codefix 用例 + 隐藏验收测试 + 自包含 HTML 报告
 uv run harness run -s suites/codefix --evaluate --concurrency 4 --max-cost 2.0
 uv run harness report --format html --out report.html
 
@@ -208,7 +208,7 @@ outcome_pass   隐藏验收测试通过（结果分）
 
 ---
 
-## 用例集：17 条 codefix 用例
+## 用例集：19 条 codefix 用例
 
 ```
 suites/codefix/
@@ -221,15 +221,38 @@ suites/codefix/
     └── tests/test_hidden.py         隐藏验收测试（生成物，**不给 SUT 看**）
 ```
 
-被测对象是 [`examples/toyrepo/`](examples/toyrepo/) —— 一个自包含的 CSV 解析 + 统计工具库
-（`csvlite`：reader / table / stats / report，551 行 + 自带 43 条可见测试）。
-它不依赖任何第三方包，所以每条用例的「改-跑-看-再改」循环都在几百毫秒内。
-
 | 层级 | 条数 | 特征 |
 |---|---|---|
 | easy | 5 | 单文件、bug 明显 |
 | medium | 7 | 需要读 docstring 才知道口径 / 跨 2-3 个模块 |
-| hard | 5 | 多轮「改-跑-看-再改」，其中 **4 条是刻意设计的过程陷阱** |
+| hard | 7 | 多轮「改-跑-看-再改」；含 **4 条刻意设计的过程陷阱** 与 **2 条真实 OSS 仓库用例** |
+
+### Track A（17 条）：自建 toyrepo
+
+被测对象是 [`examples/toyrepo/`](examples/toyrepo/) —— 一个自包含的 CSV 解析 + 统计工具库
+（`csvlite`：reader / table / stats / report，551 行 + 自带 43 条可见测试）。
+它不依赖任何第三方包，所以每条用例的「改-跑-看-再改」循环都在几百毫秒内。
+
+### Track B（2 条）：真实 OSS 仓库
+
+「harness 只在玩具上跑得通」是这类项目最容易被质疑的一点，这两条就是答案。
+跑的是 [`pallets/itsdangerous`](https://github.com/pallets/itsdangerous) 的真实源码
+与真实测试套件（415 / 416 条可见测试），**bug 是上游两个真实 commit 的反向**：
+
+| case_id | 上游修订 | 反向掉的修复 |
+|---|---|---|
+| `vendor_future_timestamp` | `c30678d` | 不再拒绝时间戳来自将来的签名（[#126](https://github.com/pallets/itsdangerous/issues/126)） |
+| `vendor_date_signed_type` | `526b1ea` | `BadTimeSignature.date_signed` 在某条错误分支里是 `int` 而非 `datetime`（[#124](https://github.com/pallets/itsdangerous/issues/124)） |
+
+源码是 `src/` 布局且**不装包**，与 Track A 的平铺布局不同 ——
+这条差异正是 `tests/e2e/test_vendored_cases.py` 存在的理由：
+它跑**真** suite / `Workspace` / `WorkspaceCommandRunner`，
+而 `tests/suites/` 那个自检是自己重新搭一遍工作目录的（见该文件的 docstring）。
+生成器的数据表只多三个字段：`source` / `revert_patch` / `hidden_source`。
+
+上游、修订、许可证与信任链（PyPI sdist ≡ gitee 镜像 ≡ 本仓库）见
+[`examples/vendor/*/VENDOR.md`](examples/vendor/) 与
+[`examples/upstream/README.md`](examples/upstream/README.md)。
 
 ### 4 条过程陷阱（过程级评测的招牌展示）
 
@@ -242,13 +265,19 @@ suites/codefix/
 
 ### 用例是**生成 + 验证**的，不是手写的
 
-`scripts/build_cases.py` 从一张数据表生成全部补丁与隐藏测试，并且**逐条验证三件事**：
+`scripts/build_cases.py` 从一张数据表生成全部补丁与隐藏测试，并且**逐条验证三件事**
+（两条轨道走的是同一套验证 —— bug 从哪来不重要）：
 
-1. toyrepo 基线干净（自带测试全过）
+1. 源树的**可见测试**在修复态下全过
+   （Track A：toyrepo 自带的 43 条；Track B：上游自带的 415 / 416 条）
 2. **注入 bug 后隐藏测试必须失败** —— 否则这条用例抓不到自己的 bug，
    模型什么都不改也能拿满分（**假阳性**，比 fail 危险得多）
 3. **打上 `fix.patch` 后必须通过** —— 否则用例**无解**，
    而「任务无解被记成模型失败」是评测数据集最隐蔽的污染源
+
+数据表本身也有校验（`_validate_table`，在生成任何东西**之前**跑）：
+两种 bug 来源必须**恰好给一种**、两种隐藏测试来源必须恰好给一种、
+引用的 `source` / `revert_patch` / `hidden_source` 必须都存在。
 
 `tests/suites/test_cases_are_solvable.py` 在 CI 里对**已提交的产物**再验一遍
 （防的是有人手改了隐藏测试或补丁）。两者不重复：脚本验它内存里的产物，测试验仓库里的文件。

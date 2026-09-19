@@ -6,20 +6,35 @@
 
 ## 当前状态（重要）
 
-**M0–M9 已完成**（任务 1–35 / 共 36）。856 条测试全绿。
+**M0–M11 全部完成**（任务 1–36）。1163 条测试全绿，四个门全绿。
 
-已完成的能力：事件模型与只读 `Trajectory`、`RunSpec`/`Run` 双 harness 骨架、6 个 SUT 工具、Windows 进程树执行器、5 个中间件、budget governor、真 provider + record/replay、suite 加载器 + 并发调度器 + SQLite 索引、5 个评测器（`TrajectoryMatcher` / `EfficiencyAnalyzer` / `FailureClassifier` / `GroundingChecker` / `MetaEvaluator`）、聚合与快照 + 终端/HTML 报告 + baseline diff + CI 门禁、**judge 自省工具 + `RunBasedJudgeClient` + 元评测**。
+已完成的能力：事件模型与只读 `Trajectory`、`RunSpec`/`Run` 双 harness 骨架、6 个 SUT 工具、Windows 进程树执行器、5 个中间件、budget governor、真 provider + record/replay、suite 加载器 + 并发调度器 + SQLite 索引、5 个评测器（`TrajectoryMatcher` / `EfficiencyAnalyzer` / `FailureClassifier` / `GroundingChecker` / `MetaEvaluator`）、聚合与快照 + 终端/HTML 报告 + baseline diff + CI 门禁、**judge 自省工具 + `RunBasedJudgeClient` + 元评测**、`adapters/`（OTel GenAI 投影 + `OtelJsonlSource`）、`tests/test_architecture.py`、**19 条用例集**（Track A 17 条自建 toyrepo + Track B 2 条真实 OSS 仓库）、README、CI workflow。
 
 五个 CLI 命令：`run` / `trace` / `report` / `diff` / `ci`。
 退出码契约：`0` 通过 · `1` 门禁未达标 · `2` 配置错误 · `3` 预算超限 · `4` 基线缺失。
 
-**尚未实现**（M11 任务 36）：adapters、`events/otel.py`、`tests/test_architecture.py`、17 条用例集、README。
-
 ### ⚠️ 看 [docs/known-gaps.md](docs/known-gaps.md)
 
 那份文档记录**没验证的事、遗留问题、与计划不同之处**。
-最重要的两条：**真模型路径从未跑过**（全部测试都在 FakeProvider 上）、
-**HTML 报告的图表从未在浏览器里打开过**。`docs/known-gaps.md` 是每次里程碑完成时更新的。
+最重要的几条：**HTML 报告的图表从未在浏览器里打开过**；
+**Track B 两条用例没跑过真模型**（只知道「可解」，不知道「模型解得开」）；
+**golden 的 17/17 一致属于循环论证**（是在推导它的那批 run 上评估的）。
+`docs/known-gaps.md` 是每次里程碑完成时更新的。
+
+### 用例集的两条轨道
+
+`suites/codefix/` 下 **19 条**，全部由 `scripts/build_cases.py` 生成并**双向验证**
+（注入 bug 后隐藏测试必须失败、打上参考修复后必须通过）：
+
+| | Track A（17 条） | Track B（2 条） |
+|---|---|---|
+| 源树 | `examples/toyrepo`（自建 `csvlite`，平铺布局） | `examples/vendor/itsdangerous-*`（真实 OSS，`src/` 布局） |
+| bug 来源 | 数据表里的一段字符串对调 | **反向一个真实上游 commit**（`revert_patch`） |
+| 隐藏测试 | 套共享 header 渲染（`what`/`imports`/`body`） | 手写的整份文件（`hidden_source`） |
+| golden | 有（录制自真跑） | **没有** —— 没跑过真模型，不能编 |
+
+改用例：改 `scripts/build_cases.py` 的数据表再跑那个脚本；Track B 另需
+`examples/upstream/<case_id>/`（上游补丁 + 隐藏测试，见该目录的 README）。
 
 ## 文档地图
 
@@ -46,7 +61,7 @@
 
 - **所有命令走 `uv run`**，不要手动 activate。项目内 `.venv` 锁 Python 3.12（本机默认是 3.14.5，不要用）
 - **TDD 五步循环**：写失败测试 → 确认失败 → 最小实现 → 确认通过 → commit
-- **架构约束可执行**：`uv run lint-imports`（契约写在 `pyproject.toml`）。M11 会再加一份纯 ast 的 `tests/test_architecture.py`，两者**刻意冗余**
+- **架构约束可执行**：`uv run lint-imports`（契约写在 `pyproject.toml`）**加上**一份纯 ast 的 `tests/test_architecture.py`，两者**刻意冗余**。两份表**等价**这件事有测试盯着（`test_import_linter_mirrors_the_whitelist`）—— 曾经不等价过，而更弱的那条会报绿
 - **L0 叶子层规则**：`events/` 只能 import 自己；`contracts/` 只能向下 import `events`。其他层只许向下依赖 L0
 - **suite 格式是 `defaults` + `cases`**（`orchestration/suite.py`）。配置错误一律在 `load_suite` 抛错：未知评测器名/中间件名、重复 case_id、`case_id` 与 `task.case_id` 不一致
 - **评测器白名单只有一份**：`evalrunner.EVALUATOR_REGISTRY`。suite 加载器引用它，不另抄一份清单 —— 两份必然漂移，且方向恰好是"加载期放行、运行期才炸"
