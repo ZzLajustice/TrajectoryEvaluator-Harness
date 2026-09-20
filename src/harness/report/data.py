@@ -32,8 +32,18 @@ def latest_snapshot_path(runs_dir: Path | str) -> Path:
 
 def collect(runs_dir: Path | str, *, snapshot: Path | str | None = None) -> dict[str, Any]:
     """读取快照 + 索引，产出 `render_report` 需要的字典。"""
-    runs_dir = Path(runs_dir)
-    snap_path = Path(snapshot) if snapshot else latest_snapshot_path(runs_dir)
+    snap_path = Path(snapshot) if snapshot else latest_snapshot_path(Path(runs_dir))
+    # ★ 面板数据必须与快照**同源**。
+    #
+    # 曾经这里是 `runs_dir = Path(runs_dir)`，于是
+    # `harness report --snapshot <别的目录>/latest.json` 只换了快照，
+    # 失败模式与 judge 面板仍然从 `--runs` 读 ——报告会把 **A 目录的图表**
+    # 配上 **B 目录的指标**。两边都是真数据，所以没有一处会报错，
+    # 也没有一处看起来可疑；只有把报告**打开**才看得出来（见 known-gaps §1.2）。
+    #
+    # 指向快照所在目录是唯一说得通的选择：用户说"这份报告讲的是这次 run"，
+    # 而快照就是那次 run 的身份证。
+    runs_dir = snap_path.parent
     snap = read_snapshot(snap_path)
 
     agg = snap.get("aggregate") or {}

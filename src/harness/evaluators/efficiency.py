@@ -33,7 +33,10 @@ _FAILURE_RATIO_WARN = 0.5
 
 class EfficiencyAnalyzer(BaseEvaluator):
     name = "EfficiencyAnalyzer"
-    subscribes = frozenset({EventType.TOOL_CALL, EventType.RUN_END})
+    # `LLM_RESPONSE` 是推理体量的来源（见 `_reasoning_volume`）。
+    # `subscribes` 是**行为**不是文档：没订阅的事件不在时这个评测器会被直接跳过。
+    subscribes = frozenset({EventType.TOOL_CALL, EventType.LLM_RESPONSE,
+                            EventType.RUN_END})
 
     def __init__(self, *, optimal_steps: int = 0, redundancy_tolerance: int = 3) -> None:
         self.optimal_steps = optimal_steps
@@ -54,6 +57,7 @@ class EfficiencyAnalyzer(BaseEvaluator):
         failed = sum(1 for r in results if not r.ok)
         total_calls = len(calls)
         step_ratio = (total_calls / self.optimal_steps) if self.optimal_steps else 0.0
+        reasoning_tokens, reasoning_ratio = self._reasoning_volume(traj)
 
         findings: list[Finding] = []
 
@@ -100,5 +104,44 @@ class EfficiencyAnalyzer(BaseEvaluator):
                 "tool_calls": float(total_calls),
                 "redundant_calls": float(redundant),
                 "failed_tool_calls": float(failed),
+                "reasoning_tokens": float(reasoning_tokens),
+                "reasoning_ratio": reasoning_ratio,
             },
         )
+
+    @staticmethod
+    def _reasoning_volume(traj: Trajectory) -> tuple[int, float]:
+        """推理 token 数，以及它占 completion tokens 的比例。
+
+        ## 为什么这算效率指标
+
+        它量的是"模型把多少产出花在了评测看不见的地方"。实测
+        （2026-09-16 全量真跑，17 条 / 194 个响应）是 **34.5%** ——
+        也就是说三分之一的产出对现有全部评测器不可见。
+
+        ## 为什么不做成一个"推理质量分"
+
+        **实测挡住的**：拿那份真实数据测过三种"推理质量"的代理信号
+        （关键词频率、推理与工具输出的 token 重合度、推理里声称要读的文件
+        vs 实际读的文件），三种与结果**都没有相关性**。
+
+        没有信号就不该造指标 —— 那种指标看起来有意义，实际是噪音，
+        而它最坏的后果是让人**去调模型**。所以这里只报体量：
+        一个不需要判断力、provider 自己上报的客观量
+        （与"走了多少步""重复调了几次"同一类）。
+
+        `reasoning_tokens` 缺省 0 是**事实**而不是"不适用"，所以键一定在
+        （§2.1：`metrics` 只能靠键缺席表达"不适用"，这里刻意不用那个逃生口 ——
+        "这个模型不推理"与"我们没去看"必须能区分）。
+        """
+        tokens = sum(r.tokens for r in traj.reasoning())
+        output = traj.output_tokens
+        if output <= 0:
+            # 没有 usage 的 provider 会让它全是 0 —— 而那正是"接一个新网关"
+            # 时的默认状态，不是异常。
+            return tokens, 0.0
+        # `output_tokens` 是**含**推理的 completion tokens。某些 provider
+        # 把两者算成不同源，会让比率大于 1 —— 那在报告里读起来像
+        # "推理比产出还多"，而实际是"这两个数不可比"。按 1 封顶，
+        # 原始 token 数照常保留。
+        return tokens, min(tokens / output, 1.0)

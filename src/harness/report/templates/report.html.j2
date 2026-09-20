@@ -95,7 +95,7 @@
   <div class="card">
     <div class="label">cost_usd</div>
     <div class="value">{{ "%.4f"|format(aggregate.get("total_cost_usd") or 0) }}</div>
-    <div class="note">{{ aggregate.get('total_turns') or 0 }} turns · {{ aggregate.get('total_tool_calls') or 0 }} tool calls</div>
+    <div class="note">{{ aggregate.get('total_turns') or 0 }} turns · {{ aggregate.get('total_tool_calls') or 0 }} tool calls · {{ aggregate.get('total_reasoning_tokens') or 0 }} reasoning tok</div>
   </div>
 </div>
 
@@ -115,9 +115,19 @@
 
 <h2>图表</h2>
 <div class="charts">
-  <div id="chart-failure-modes" class="chart"></div>
+  {# ★ 空态必须**写在页面上**，不能只靠 JS 里 return。
+     `return` 留下的是一个等高的空白框，而空白框与"图画崩了"在读者眼里
+     完全一样 —— 2026-09-19 第一次真的在浏览器里打开报告时，
+     两张空图就是这么被发现的（known-gaps §1.2）。
+     空轴线更糟：它看起来像"画出来了，只是没有数据"，
+     而读者会把它读成"这次跑没有任何失败模式"—— 那是另一个结论。 #}
+  <div id="chart-failure-modes" class="chart">
+    {% if not failure_modes %}<p class="empty">没有失败模式（这次 run 没有触发任何分类规则）</p>{% endif %}
+  </div>
   <div id="chart-cost-quality" class="chart"></div>
-  <div id="chart-judge" class="chart"></div>
+  <div id="chart-judge" class="chart">
+    {% if not judge %}<p class="empty">未启用 judge —— suite 里默认关闭，打开后这里显示判定一致性 / 成本 / 抗注入</p>{% endif %}
+  </div>
 </div>
 {#
   注：计划里的"模型 × 任务热力图"需要**跨模型**的对比数据，
@@ -220,6 +230,9 @@ function init(id, option) {
 (function () {
   const entries = Object.entries(DATA.failure_modes || {})
     .sort((a, b) => b[1] - a[1]);
+  // 没有数据时**不初始化** —— 容器里已经有页面渲染好的空态文案，
+  // 在这里 init 会把那段话擦掉，换回一个空图。
+  if (!entries.length) return;
   init('chart-failure-modes', Object.assign({}, BASE, {
     title: { text: '失败模式分布', left: 'center', textStyle: { fontSize: 13 } },
     xAxis: { type: 'category', data: entries.map(e => e[0]),

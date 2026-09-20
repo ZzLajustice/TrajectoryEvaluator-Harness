@@ -27,6 +27,7 @@ from harness.orchestration.aggregator import (
     CaseOutcome,
     aggregate,
     read_snapshot,
+    snapshot_dict,
     to_case_outcomes,
     write_snapshot,
 )
@@ -325,3 +326,48 @@ def test_flaky_is_judged_on_the_same_basis_as_pass_rate():
     ])
     assert cases[0].case_status == CASE_FLAKY
     assert aggregate(cases)["flaky_rate"] == 1.0
+
+
+# ---- 推理体量（本次新增）----
+def _with_reasoning(case_id: str, tokens: float, *, run_id: str = "r1"):
+    """一条带 EfficiencyAnalyzer 推理指标的 run。"""
+    from harness.contracts.results import EvalResult, EvalStatus
+
+    o = _run_outcome(case_id, RunStatus.OK, run_id=run_id)
+    o.evals.append(EvalResult(
+        evaluator="EfficiencyAnalyzer", run_id=run_id, status=EvalStatus.PASS,
+        metrics={"reasoning_tokens": tokens},
+    ))
+    return o
+
+
+def test_reasoning_tokens_are_aggregated_from_the_efficiency_evaluator():
+    """★★ 新增的指标必须**到得了报告**，否则它就是死代码。
+
+    `EfficiencyAnalyzer` 的 metrics 只活在 `EvalResult` 里，
+    而快照与终端/HTML 报告读的都是**聚合层**产出的 `aggregate`
+    与逐 case 字段。少接这一段，`reasoning_tokens` 会被算出来然后扔掉 ——
+    而"算了但没人看得见"与"没算"在测试里长得一样。
+
+    ★ 这条是被打脸写下的：推理指标先在评测器里做完了，
+    跑到报告那一步才发现快照的 case 字段里根本没有 `metrics`，
+    终端报告的列也是写死的六个。
+    """
+    agg = aggregate(to_case_outcomes([
+        _with_reasoning("c1", 300.0, run_id="r1"),
+        _with_reasoning("c2", 700.0, run_id="r2"),
+    ]))
+    assert agg["total_reasoning_tokens"] == 1000
+
+
+def test_a_run_without_a_reasoning_metric_contributes_zero():
+    """没跑效率评测器（或它没报这个键）时按 0 算，不能让聚合炸。"""
+    agg = aggregate(to_case_outcomes([_run_outcome("c1", RunStatus.OK)]))
+    assert agg["total_reasoning_tokens"] == 0
+
+
+def test_reasoning_tokens_reach_the_snapshot():
+    """快照是报告与 diff 的唯一输入 —— 不进快照就到不了报告。"""
+    cases = to_case_outcomes([_with_reasoning("c1", 42.0)])
+    snap = snapshot_dict(aggregate(cases), cases)
+    assert snap["runs"][0]["reasoning_tokens"] == 42

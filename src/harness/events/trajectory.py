@@ -21,6 +21,7 @@ import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
+from harness.events.reasoning import Reasoning, reasoning_of
 from harness.events.types import (
     ContextCompactEvent,
     EventType,
@@ -92,6 +93,36 @@ class Trajectory:
 
     def llm_responses(self) -> tuple[LLMResponseEvent, ...]:
         return self.of(EventType.LLM_RESPONSE)  # type: ignore[return-value]
+
+    def reasoning(self) -> tuple[Reasoning, ...]:
+        """模型每一轮的推理，按 `seq` 升序；没有推理的轮次不在其中。
+
+        ## 为什么它值得一个访问器
+
+        推理是**唯一**记录"模型当时在想什么"的地方，而它默认谁都看不到：
+        `LLMResponseEvent.text` 常常是空的（实测 17 条真轨迹里，
+        有些轮次 `content` 为空字符串而推理有一千多字）——
+        也就是说，只看 `text` 的话，那些轮次里模型的全部努力不可见。
+
+        体量上它也不是边角料：实测推理 79,306 字符 vs 可见输出 7,336 字符
+        （**10.8x**），provider 上报的 reasoning tokens 占 completion tokens 的 **34.5%**。
+
+        ## 它是**证据**，不是一个分数
+
+        刻意不在这里下任何判断（不评分、不判定"想得好不好"）——
+        理由是实测的：拿这份数据测过三种"推理质量"的代理信号
+        （关键词频率、与工具输出的 token 重合度、声称要读的文件 vs 实际读的文件），
+        **三种与结果都没有相关性**（详见 `docs/known-gaps.md` §2.6）。
+        没有信号就不该造指标 —— 那种指标看起来有意义，实际是噪音。
+
+        返回 `tuple`：与其余访问器一致，评测器改不了轨迹。
+        """
+        found = []
+        for event in self.llm_responses():
+            got = reasoning_of(event)
+            if got is not None:
+                found.append(got)
+        return tuple(found)
 
     def tool_calls(self) -> tuple[ToolCallEvent, ...]:
         return self.of(EventType.TOOL_CALL)  # type: ignore[return-value]

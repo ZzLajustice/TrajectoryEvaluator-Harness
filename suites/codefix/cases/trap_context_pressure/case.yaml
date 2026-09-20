@@ -35,6 +35,15 @@ graders:
     config:
       mode: in_order
       tool_args_match_mode: ignore
+  # 纯规则、零 LLM 成本，报的是不需要判断力的客观量：
+  # tool_calls / redundant_calls / failed_tool_calls，以及 **reasoning_tokens**
+  # （模型有多少产出花在了所有评测器都看不到的地方 —— 实测占 completion 的 34.5%）。
+  #
+  # ★ 刻意**不配 `optimal_steps`**：那会启用 `step_ratio` 与
+  #   `efficiency.excessive_steps`，而每条用例的"最优步数"目前只是先验估计，
+  #   没有任何数据支撑。用未验证的阈值发 MAJOR 级 finding，
+  #   等于把猜测写成结论 —— 报告里会多出一批看起来言之凿凿的告警。
+  - name: EfficiencyAnalyzer
   - name: FailureClassifier
     config:
       expected_modes: [loss_of_conversation_history]

@@ -175,3 +175,67 @@ async def test_long_tool_output_is_truncated():
             .run_end().build())
     r = await ReadTrajectoryTool(traj).invoke(_call(), None)
     assert len(r.content) < 1000
+
+
+# ---- 推理必须渲染出来 ----
+async def test_it_renders_the_models_reasoning():
+    """★★ judge 判"为什么失败"时，模型的推理是信息量最大的那一份证据。
+
+    没有这条渲染，`llm.response` 那一行只显示工具名或 `text` ——
+    而实测里 `text` 经常是**空字符串**：17 条真轨迹里有些轮次
+    `content` 为空、推理一千多字。那些轮次里模型在想什么，
+    judge 一个字都看不到。
+
+    实测症状（2026-09-16 全量真跑的某一条）：模型连续 5 轮在推理里写
+    "no output? ... maybe the harness suppresses output"，而那些轮次
+    的 `content` 全空、工具调用全是 `run_command`。
+    judge 看到的是"重复调用同一个命令"，真因（它在排查环境）只存在于推理里。
+    """
+    subject = (TB(run_id="sut1").turn()
+               .llm_response(reasoning="pytest returns exit 1 but no output?",
+                             tool_calls=[("run_command", {"argv": ["pytest"]})])
+               .tool_result(name="run_command", content="", ok=True)
+               .run_end(status="ok").build())
+    r = await ReadTrajectoryTool(subject).invoke(_call(), None)
+    assert r.ok
+    assert "pytest returns exit 1 but no output?" in r.content, (
+        f"推理没有被渲染，judge 看不到模型自己的想法:\n{r.content}")
+
+
+async def test_the_reasoning_excerpt_is_bounded():
+    """★ 推理是可见输出的 10.8 倍，整段塞进 judge 的上下文会把证据淹掉。
+
+    渲染要**有界**，理由与 `tool.result` 的截断相同：
+    judge 需要的通常是"有没有这句话"，不是逐字全文。
+    """
+    subject = (TB(run_id="sut1").turn()
+               .llm_response(reasoning="x" * 5000)
+               .run_end(status="ok").build())
+    r = await ReadTrajectoryTool(subject).invoke(_call(), None)
+    assert r.ok
+    assert len(r.content) < 1000, f"推理没有截断，渲染出 {len(r.content)} 字符"
+
+
+async def test_a_response_with_only_reasoning_is_not_an_empty_line():
+    """纯推理轮次（没有 text、没有工具调用）现在有内容可显示了。
+
+    在那之前这一行渲染成 `llm.response`，什么都不带 ——
+    与"这一轮什么都没发生"长得一模一样。
+    """
+    subject = (TB(run_id="sut1").turn()
+               .llm_response(reasoning="I should check the reader module first")
+               .run_end(status="ok").build())
+    r = await ReadTrajectoryTool(subject).invoke(_call(), None)
+    assert "I should check the reader module first" in r.content
+
+
+async def test_responses_without_reasoning_render_exactly_as_before():
+    """守卫：没有推理的响应（实测占 17%）渲染不能变。
+
+    它们往往是真正干事的那几次（调工具的那一轮）——
+    渲染形状变了会让 judge 已有的读法失效。
+    """
+    r = await ReadTrajectoryTool(_subject()).invoke(_call(), None)
+    assert "tool_calls=['read_file']" in r.content
+    assert "tool_calls=['finish']" in r.content
+    assert "thinking" not in r.content

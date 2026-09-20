@@ -38,6 +38,7 @@ def _data() -> dict:
             "flaky_cases": ["bug_007"], "status_distribution": {"ok": 2, "no_finish": 1},
             "total_cost_usd": 0.42, "golden_score_mean": 0.8,
             "total_turns": 9, "total_tool_calls": 12,
+            "total_reasoning_tokens": 20089,
         },
         "cases": [
             {"case_id": "bug_007", "tier": "medium", "status": "flaky",
@@ -244,3 +245,23 @@ def test_output_uses_lf_newlines(tmp_path):
     r"""Windows 上默认会把 \n 翻成 \r\n，报告体积白白变大。"""
     out = render_report(_data(), tmp_path / "r.html")
     assert b"\r\n" not in out.read_bytes()
+
+
+def test_the_reasoning_volume_reaches_the_html(tmp_path):
+    """★ 与终端报告同理：聚合层有了，卡片不显示等于没做。
+
+    它挂在成本卡片的 note 行上，与 turns / tool calls 并列 ——
+    同一类事实（不需要判断力就能量），不单独占一张卡。
+    """
+    html = _render(tmp_path)
+    assert "20089 reasoning tok" in html
+
+
+def test_the_reasoning_metric_is_defined_in_the_footnote(tmp_path):
+    """★ 它最容易被**读成分数**，所以口径必须写死在脚注里。
+
+    "推理 20089" 旁边没有解释的话，读者会当成"模型想得好不好"——
+    而实测三种推理质量的代理信号与结果都没有相关性。
+    """
+    html = _render(tmp_path)
+    assert "推理消耗的 token 数" in html

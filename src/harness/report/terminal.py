@@ -70,7 +70,12 @@ def build_terminal_report(
 
 
 def _metrics_table(agg: dict[str, Any]) -> Table:
-    """三个指标并排，各自独立 —— 没有"总分"这一列。"""
+    """三个指标并排，各自独立 —— 没有"总分"这一列。
+
+    `reasoning_tok` 是**体量**不是质量：模型有多少产出花在了所有评测器都
+    看不到的地方（实测占 completion tokens 的 34.5%）。放在这张表里是因为
+    它和 cost / steps 同一类 —— 不需要判断力就能量。**不要**把它读成分数。
+    """
     t = Table(show_header=True, header_style="bold")
     t.add_column("pass_rate", justify="right")
     t.add_column("pass@k", justify="right")
@@ -78,6 +83,7 @@ def _metrics_table(agg: dict[str, Any]) -> Table:
     t.add_column("golden_score", justify="right")
     t.add_column("cases", justify="right")
     t.add_column("cost_usd", justify="right")
+    t.add_column("reasoning_tok", justify="right")
 
     golden = agg.get("golden_score_mean")
     t.add_row(
@@ -88,6 +94,7 @@ def _metrics_table(agg: dict[str, Any]) -> Table:
         f"{golden:.2f}" if golden is not None else "n/a",
         str(agg.get("cases", 0)),
         f"{agg.get('total_cost_usd', 0.0):.4f}",
+        str(agg.get("total_reasoning_tokens", 0)),
     )
     return t
 

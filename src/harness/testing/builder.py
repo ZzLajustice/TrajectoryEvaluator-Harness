@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from harness.contracts.protocols import ToolCall
+from harness.events.reasoning import REASONING_KEY
 from harness.events.trajectory import Trajectory
 from harness.events.types import (
     EventType,
@@ -93,6 +94,8 @@ class TrajectoryBuilder:
         input_tokens: int = 0,
         output_tokens: int = 0,
         cost_usd: float | None = None,
+        reasoning: str = "",
+        reasoning_tokens: int = 0,
     ) -> TrajectoryBuilder:
         """记录一次模型响应。
 
@@ -103,6 +106,12 @@ class TrajectoryBuilder:
         而成本是**一等指标**（judge_cost 与 sut 的 cost 严格分列）。
         不支持它们的话，那条路径只能靠 `of()` 手搓事件来测 —— 而手搓的
         事件形状与生产不一致，测了等于没测。
+
+        `reasoning` 是**厂商形状的原始响应**里那个字段，由这里按
+        `events/reasoning.py` 的路径拼出来 —— 调用方不必知道
+        `choices[0].message.reasoning_content` 这条路径，
+        正如同一个模块让评测器也不必知道。
+        `reasoning_tokens` 是 provider 上报的体量，缺省 0。
         """
         calls: list[ToolCall] = []
         for spec in tool_calls or []:
@@ -122,6 +131,17 @@ class TrajectoryBuilder:
         content.extend({"type": "tool_use", "id": c.call_id, "name": c.name,
                         "input": c.arguments} for c in calls)
 
+        # 原始响应按 **OpenAI 兼容形状**拼 —— 这是生产里真实的形状
+        # （`providers/openai_compat.py` 存进来的就是它）。
+        # 拼一个更"干净"的自定义形状会让 `Trajectory.reasoning()` 测不出来：
+        # 它按 `events/reasoning.py` 里那条厂商路径取值。
+        raw: dict[str, Any] = {"choices": [{"message": {}}]}
+        if reasoning:
+            raw["choices"][0]["message"][REASONING_KEY] = reasoning
+        if reasoning_tokens:
+            raw["usage"] = {"completion_tokens_details":
+                            {"reasoning_tokens": reasoning_tokens}}
+
         self._events.append(LLMResponseEvent(
             run_id=self._run_id, seq=self._next_seq(),
             type=EventType.LLM_RESPONSE, turn=self._turn, model="fake",
@@ -133,6 +153,7 @@ class TrajectoryBuilder:
             output_tokens=output_tokens,
             cost_usd=cost_usd,
             latency_ms=0,
+            raw=raw,
         ))
         # 为每个调用单独发 TOOL_CALL —— 真实 loop 就是这么做的，
         # builder 必须镜像它。漏掉这一步会让 `trajectory.tool_calls()` 为空，

@@ -30,6 +30,7 @@ from __future__ import annotations
 from typing import Any
 
 from harness.contracts.protocols import ToolCall, ToolResult
+from harness.events.reasoning import reasoning_of
 from harness.events.trajectory import Trajectory
 
 
@@ -123,6 +124,8 @@ def _render(event: Any) -> str:
     因为注射语在被测轨迹的 `tool.result.content` 里，而 judge 看不见它。
     """
     kind = event.type.value
+    if kind == "llm.response":
+        return _render_response(event)
     if kind == "tool.result":
         mark = "ok" if event.ok else f"FAIL {event.error_type or ''}".strip()
         body = (event.content or event.error or "").strip().replace("\n", " ")
@@ -130,13 +133,40 @@ def _render(event: Any) -> str:
     if kind == "tool.call":
         args = str(getattr(event, "arguments", {})).replace("\n", " ")
         return f"{event.seq:>4}  {kind:<18}{event.name}({args[:_EXCERPT]})"
-    if kind == "llm.response":
-        calls = getattr(event, "tool_calls", None) or []
-        if calls:
-            return (f"{event.seq:>4}  {kind:<18}"
-                    f"tool_calls={[c.get('name') for c in calls]}")
-        text = (getattr(event, "text", "") or "").strip().replace("\n", " ")
-        return f"{event.seq:>4}  {kind:<18}{text[:_EXCERPT]}"
     if kind == "run.end":
         return f"{event.seq:>4}  {kind:<18}status={getattr(event, 'status', '')}"
     return f"{event.seq:>4}  {kind:<18}"
+
+
+def _render_response(event: Any) -> str:
+    """`llm.response` 那一行：**工具名或正文，加上模型的推理**。
+
+    ## 推理必须渲染（本次新增）
+
+    在此之前这一行只有工具名或 `text` —— 而实测里 `text` 经常是空字符串：
+    17 条真轨迹里有轮次 `content` 为空、推理一千多字。那些轮次里模型在想什么，
+    judge 一个字都看不到。
+
+    实测症状（2026-09-16 全量真跑的某一条）：模型连续 5 轮在推理里写
+    "no output? ... maybe the harness suppresses output"，
+    而那些轮次的 `content` 全空、工具调用全是 `run_command`。
+    judge 看到的是"重复调用同一个命令"，真因（它在排查环境）只存在于推理里。
+
+    ## 为什么截断
+
+    推理是可见输出的 **10.8 倍**（实测 79,306 vs 7,336 字符）。
+    整段渲染会把 judge 的上下文撑爆，而它要看的那几步反而被淹掉 ——
+    理由与 `tool.result` 的截断完全相同（见 `_EXCERPT`）。
+    代价是长推理的后半段看不到；"按需读更长片段"仍未实现（known-gaps §2.2）。
+    """
+    calls = getattr(event, "tool_calls", None) or []
+    if calls:
+        head = f"tool_calls={[c.get('name') for c in calls]}"
+    else:
+        head = (getattr(event, "text", "") or "").strip().replace("\n", " ")[:_EXCERPT]
+
+    found = reasoning_of(event)
+    if found is None:
+        return f"{event.seq:>4}  {'llm.response':<18}{head}"
+    body = " ".join(found.text.split())[:_EXCERPT]
+    return f"{event.seq:>4}  {'llm.response':<18}{head}  thinking: {body}"

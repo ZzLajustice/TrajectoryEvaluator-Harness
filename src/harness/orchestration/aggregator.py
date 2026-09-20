@@ -49,6 +49,10 @@ _GOLDEN_EVALUATOR = "TrajectoryMatcher"
 # 结果级判定的来源。见 `CaseOutcome.comparables` 的说明。
 _OUTCOME_EVALUATOR = "OutcomeGrader"
 
+# 推理体量的来源。评测器的 metrics 只活在 `EvalResult` 里，而报告与快照
+# 读的是聚合层 —— 不在这里接一手，"算了但没人看得见"与"没算"没有区别。
+_REASONING_EVALUATOR = "EfficiencyAnalyzer"
+
 # case 级状态（diff 的三态）
 CASE_OK = "ok"
 CASE_FAIL = "fail"
@@ -72,6 +76,11 @@ class CaseOutcome:
     cost_usd: float = 0.0
     turns: int = 0
     tool_calls: int = 0
+    #: provider 上报的推理 token 数（`EfficiencyAnalyzer` 汇总的）。
+    #:
+    #: 它不是"推理质量"，是**体量**：模型把多少产出花在了所有评测器都
+    #: 看不到的地方。实测全量真跑是 completion tokens 的 34.5%。
+    reasoning_tokens: int = 0
     tier: str = "medium"
     spec_fingerprint: str | None = None
 
@@ -138,6 +147,7 @@ def aggregate(outcomes: list[CaseOutcome]) -> dict[str, Any]:
             "pass_basis": "run_status",
             "flaky_cases": [], "status_distribution": {}, "total_cost_usd": 0.0,
             "total_turns": 0, "total_tool_calls": 0, "golden_score_mean": None,
+            "total_reasoning_tokens": 0,
             "tiers": {},
         }
 
@@ -168,6 +178,7 @@ def aggregate(outcomes: list[CaseOutcome]) -> dict[str, Any]:
         "total_cost_usd": sum(o.cost_usd for o in outcomes),
         "total_turns": sum(o.turns for o in outcomes),
         "total_tool_calls": sum(o.tool_calls for o in outcomes),
+        "total_reasoning_tokens": sum(o.reasoning_tokens for o in outcomes),
         "golden_score_mean": (sum(golden) / len(golden)) if golden else None,
         "tiers": dict(Counter(o.tier for o in outcomes)),
     }
@@ -210,6 +221,14 @@ def to_case_outcomes(runs: list[Any]) -> list[CaseOutcome]:
             for item in items for ev in item.evals
             if ev.evaluator == _GOLDEN_EVALUATOR and ev.score is not None
         ]
+        # 推理体量是**累计量**，所以跨 repeat 求和而不是取均值 ——
+        # 与 cost/turns 一致。取均值会得到"每次 repeat 平均想多少"，
+        # 而报告要回答的是"整个 suite 有多少产出是不可见的"。
+        reason_tokens = sum(
+            ev.metrics.get("reasoning_tokens", 0.0)
+            for item in items for ev in item.evals
+            if ev.evaluator == _REASONING_EVALUATOR
+        )
         out.append(CaseOutcome(
             case_id=case_id,
             statuses=[item.result.status for item in items],
@@ -219,6 +238,7 @@ def to_case_outcomes(runs: list[Any]) -> list[CaseOutcome]:
             cost_usd=sum(item.result.usage.cost_usd for item in items),
             turns=sum(item.result.turns for item in items),
             tool_calls=sum(item.result.tool_calls for item in items),
+            reasoning_tokens=int(reason_tokens),
             tier=_tier_of(items[0]),
             spec_fingerprint=_fingerprint_of(items[0]),
         ))
@@ -276,6 +296,7 @@ def snapshot_dict(
                 "spec_fingerprint": c.spec_fingerprint,
                 "golden_score": c.golden_score,
                 "cost_usd": c.cost_usd,
+                "reasoning_tokens": c.reasoning_tokens,
             }
             for c in cases
         ],

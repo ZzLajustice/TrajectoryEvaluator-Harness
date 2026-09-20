@@ -1,0 +1,25 @@
+# 参考路径 —— 真实 run 录制 → 归一化 → 人工审核。见 docs/known-gaps.md §1.6.4。
+#
+# 保留的是**形状**（改之前先看），不是逐字复刻的序列。
+#
+# ★ 这条 golden 在录制它的那批 run 上**有牙齿**，值得记一笔：
+# 2026-09-19 的 `--repeat 3`，三次结果是 通过 / 通过 / **没通过**。
+#
+#     通过    read_file ×14 → write_file → run_command ...
+#     通过    read_file ×8  → write_file → ...
+#     没通过  read_file ×8  → run_command ×5 → search ×2 → read_file ×2
+#             **一次 write_file 都没有** —— 它压根没改代码
+#
+# 也就是说这次失败**在过程上就已经现形了**：没写文件 = 没修。
+# 而结果级判据（隐藏测试）要到评测阶段才知道同一件事。
+# 这正是过程分存在的理由，也是唯一一次它在真实数据上被验证到。
+#
+# ⚠️ 但同样地：它从这批 run 推导，在这批上算拟合度是循环论证。
+# 预测力要看**下一次** run。
+alternatives:
+    - [[read_file, {}], [write_file, {}]]
+generated_by:
+  model: deepseek-flash
+  date: '2026-09-19'
+  reviewed: true
+  recorded_runs: 3

@@ -1,0 +1,17 @@
+# 参考路径 —— 真实 run 录制 → 归一化 → 人工审核。见 docs/known-gaps.md §1.6.4。
+#
+# 保留的是**形状**（改之前先看），不是逐字复刻的序列。这一条尤其如此：
+# Track B 跑的是真实仓库，三次 run 的调用数是 18 / 15 / 17，
+# 逐字复刻没有任何意义。
+#
+# 三次**全过**（2026-09-19，`--repeat 3`），三次都是先 read_file 再 write_file。
+#
+# ⚠️ 这条 golden 是从**那次跑**推导的，所以在它上面报拟合度是循环论证。
+# 它的预测力要看**下一次** run —— 与 Track A 那批 15/17 的得到方式相同。
+alternatives:
+    - [[read_file, {}], [write_file, {}]]
+generated_by:
+  model: deepseek-flash
+  date: '2026-09-19'
+  reviewed: true
+  recorded_runs: 3

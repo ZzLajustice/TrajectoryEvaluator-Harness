@@ -30,6 +30,7 @@ def _agg(**over) -> dict:
         "cases": 3, "pass_rate": 0.67, "pass@k": 1.0, "flaky_rate": 0.33,
         "flaky_cases": ["bug_007"], "status_distribution": {"ok": 2, "no_finish": 1},
         "total_cost_usd": 0.42, "total_turns": 9, "total_tool_calls": 12,
+        "total_reasoning_tokens": 20089,
         "golden_score_mean": 0.8,
     }
     base.update(over)
@@ -138,3 +139,24 @@ def test_metric_definitions_are_documented_in_the_report_footnote():
     note = metric_footnote()
     assert "无偏估计量" in note
     assert "分列" in note
+
+
+def test_reasoning_volume_is_shown_and_labelled_as_volume():
+    """★ 推理 token 数必须在报告里出现 —— 否则那个指标等于没做。
+
+    ★ 这条是被打脸写下的：评测器里先算好了 `reasoning_tokens`，
+    跑到报告这一步才发现快照不带 `metrics`、终端报告的列是写死的六个，
+    于是它被算出来然后扔掉。**"算了但没人看得见"与"没算"没有区别。**
+
+    标签刻意叫 `reasoning_tok` 而不是 `reasoning` 之类 ——
+    它量的是体量（多少产出是不可见的），不是质量分。
+    """
+    text = _render(_agg())
+    assert "reasoning_tok" in text
+    assert "20089" in text
+
+
+def test_missing_reasoning_volume_renders_as_zero_not_blank():
+    """没跑效率评测器时是 0，不是空 —— 空格在表格里读起来像"坏了"。"""
+    text = _render(_agg(total_reasoning_tokens=0))
+    assert "reasoning_tok" in text
