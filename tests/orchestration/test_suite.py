@@ -297,7 +297,22 @@ def test_a_fake_provider_with_a_script_still_passes_preflight(tmp_path):
     assert _preflight_ok(tmp_path, _WITH_SCRIPT)
 
 
-def test_a_real_provider_still_passes_preflight_without_a_script(tmp_path):
-    """守卫：真 provider 不需要 `fake_script`（它的台词来自模型）。"""
-    real = _NO_SCRIPT.replace("provider: fake", "provider: deepseek")
-    assert _preflight_ok(tmp_path, real)
+def test_a_real_provider_needs_no_fake_script(tmp_path):
+    """守卫：真 provider 不需要 `fake_script`（它的台词来自模型）。
+
+    ★ 这条**只调 `_require_fake_script`，不调整个 `_preflight`**。
+
+    原来它调的是 `_preflight`，于是在开发机上过、在干净 clone 上**红** ——
+    因为 `_preflight` 对真 provider 会去 `resolve_endpoint` 解析凭据，
+    而开发机有个 `.env` 里放着 key。也就是说那条测试真正断言的是
+    **"我这儿有 API key"**，不是"真 provider 不需要脚本"。
+
+    这个错误只有在**真的 clone 一份出来跑**时才会暴露 —— 本机永远绿。
+    隔离到被测的那条校验上，它就不再依赖环境了。
+    """
+    from harness.orchestration.deps import RunBuilder
+
+    suite = load_suite(_write(
+        tmp_path, _NO_SCRIPT.replace("provider: fake", "provider: deepseek")))
+    # 不抛就是通过 —— 真 provider 的凭据解析是另一件事，有它自己的测试
+    RunBuilder(out_dir=tmp_path / "o", workdir=tmp_path / "w")._require_fake_script(suite)
