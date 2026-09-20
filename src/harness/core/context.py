@@ -98,12 +98,41 @@ class ContextManager:
         self._history.append(Message(role="assistant", content=list(resp.content)))
 
     def append_tool_result(self, result: ToolResult) -> None:
+        """把工具结果追加进历史。
+
+        ## ★ `ok=False` 是**两种**情况，绝不能混为一谈
+
+            命令跑了但退出码非零   → **有输出**，必须原样给模型
+            工具根本没跑成         → 没有输出，只有原因
+
+        这里曾经是 `result.content if result.ok else (result.error or "")`，
+        于是 `pytest -q` 在**用例失败**时的 865 字符输出被整段丢弃，
+        模型只收到 `'exit code 1'` 五个字 —— 而 pytest 正是**靠退出码报告失败**的。
+        也就是说：模型在**最需要看到测试输出的时候**看不到它，
+        修好之后（退出 0）才突然看得见。
+
+        实测代价（2026-09-19 全量跑，19 条）：**42 个工具结果、80,096 字符**
+        被丢弃，影响 19 条中的 12 条。轨迹里模型的推理写着
+        "no output? Odd."、"Weird, no output" —— 连续 5 轮在找一个并不存在的问题。
+
+        契约本来就是对的（`contracts/protocols.py::Message.tool_result`：
+        "错误也走同一条 content 通道 —— GroundingChecker 依赖原文可见"），
+        **是这里违反了它**。
+        """
+        body = result.content or ""
+        if not result.ok:
+            # 失败原因放**前面**：它是摘要，后面那段是证据。
+            # 反过来的话，模型要读完 800 字符才知道命令失败了。
+            if result.error and body:
+                body = f"{result.error}\n{body}"
+            elif result.error:
+                body = result.error
+            if not body:
+                # 不该发生（工具总会设 content 或 error 之一），
+                # 但真发生时光秃秃一个 `ERROR: ` 在模型眼里像"返回了空字符串"。
+                body = "(no output)"
         self._history.append(
-            Message.tool_result(
-                result.call_id,
-                result.content if result.ok else (result.error or ""),
-                ok=result.ok,
-            )
+            Message.tool_result(result.call_id, body, ok=result.ok)
         )
 
     # ---- 构造请求 ----

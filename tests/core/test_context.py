@@ -209,3 +209,83 @@ def test_digest_changes_with_history():
     d0 = cm.build_request(turn=0).digest
     cm.append_assistant(_resp("x"))
     assert cm.build_request(turn=1).digest != d0
+
+
+# --------------------------------------------------------------------------
+# 工具结果的内容**绝不能因为 ok=False 就被丢掉**
+# --------------------------------------------------------------------------
+def _tool_msg(cm: ContextManager, result: ToolResult) -> str:
+    """跑一次 append_tool_result，取回**模型实际会看到的那段文本**。
+
+    走 `build_request()` 而不是直接读 `_history`：那才是发给 provider 的东西，
+    而"模型看到了什么"正是这条测试要问的。
+    """
+    cm.append_tool_result(result)
+    msgs = cm.build_request(0).messages
+    return str(msgs[-1].content[0].get("content") or "")
+
+
+def test_a_failed_command_still_shows_its_output():
+    """★★ 命令跑了、有输出、退出码非零 —— 模型**必须**看到那段输出。
+
+    这条是被一次真实全量跑逼出来的（2026-09-19，见 known-gaps §2.9）。
+    原来的实现是：
+
+        result.content if result.ok else (result.error or "")
+
+    于是 `pytest -q` 在**用例失败**时的 865 字符输出被整段丢弃，
+    模型收到的只有 `'exit code 1'` 五个字。
+
+    ★ 而 pytest **靠退出码报告失败** —— 退出 1 正是"有用例没过"。
+    也就是说模型在**最需要看到测试输出的时候**看不到它：
+    修好之前一片空白，修好之后（退出 0）才突然看得见。
+
+    实测代价：19 条用例的跑里，**42 个工具结果、80,096 字符**被丢弃，
+    影响 19 条中的 12 条。轨迹里模型的推理写着"no output? Odd."、
+    "Weird, no output" —— 连续 5 轮在找一个并不存在的问题。
+
+    ★ 契约本来就写对了，是调用点违反了它。见
+    `contracts/protocols.py::Message.tool_result`：
+    "错误也走同一条 content 通道 —— GroundingChecker 依赖原文可见"。
+    """
+    cm = ContextManager(system_prompt="s", token_budget=100_000)
+    body = _tool_msg(cm, ToolResult(
+        "c1", "run_command", False,
+        content="1 failed, 2 passed\nFAILED test_gt_is_strict",
+        error="exit code 1", error_type="nonzero_exit",
+    ))
+    assert "1 failed, 2 passed" in body, "命令的输出被丢掉了"
+    assert "exit code 1" in body, "退出码没有告诉模型"
+
+
+def test_a_denied_call_shows_the_denial_reason():
+    """守卫：被拦下的调用**没有内容**，只有原因 —— 那条路径不能变。
+
+    `ok=False` 覆盖两种完全不同的情况，混为一谈正是上面那个 bug 的成因：
+
+        命令跑了但退出非零   → 有输出，必须给
+        工具根本没跑成       → 没有输出，只有原因
+    """
+    cm = ContextManager(system_prompt="s", token_budget=100_000)
+    body = _tool_msg(cm, ToolResult(
+        "c1", "run_command", False,
+        error="blocked by policy: rm -rf", error_type="denied",
+    ))
+    assert "blocked by policy" in body
+
+
+def test_a_successful_result_is_untouched():
+    """守卫：正常路径一个字符都不能变 —— 它在全部 358 个结果里占多数。"""
+    cm = ContextManager(system_prompt="s", token_budget=100_000)
+    body = _tool_msg(cm, ToolResult("c1", "read_file", True, content="file body"))
+    assert body == "file body"
+
+
+def test_an_empty_failure_does_not_produce_a_bare_prefix():
+    """退化输入：既没内容也没原因时，不能留下一个光秃秃的 `ERROR: `。
+
+    那在模型眼里像"工具返回了一段空字符串"，而不是"这次调用没有产出"。
+    """
+    cm = ContextManager(system_prompt="s", token_budget=100_000)
+    body = _tool_msg(cm, ToolResult("c1", "x", False))
+    assert body.strip() not in ("", "ERROR:")
