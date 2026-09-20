@@ -6,7 +6,7 @@
 
 ## 当前状态（重要）
 
-**M0–M11 全部完成**（任务 1–36）。1163 条测试全绿，四个门全绿。
+**M0–M11 全部完成**（任务 1–36）。**1206 条测试全绿，四个门全绿**。
 
 已完成的能力：事件模型与只读 `Trajectory`、`RunSpec`/`Run` 双 harness 骨架、6 个 SUT 工具、Windows 进程树执行器、5 个中间件、budget governor、真 provider + record/replay、suite 加载器 + 并发调度器 + SQLite 索引、5 个评测器（`TrajectoryMatcher` / `EfficiencyAnalyzer` / `FailureClassifier` / `GroundingChecker` / `MetaEvaluator`）、聚合与快照 + 终端/HTML 报告 + baseline diff + CI 门禁、**judge 自省工具 + `RunBasedJudgeClient` + 元评测**、`adapters/`（OTel GenAI 投影 + `OtelJsonlSource`）、`tests/test_architecture.py`、**19 条用例集**（Track A 17 条自建 toyrepo + Track B 2 条真实 OSS 仓库）、README、CI workflow。
 
@@ -16,10 +16,22 @@
 ### ⚠️ 看 [docs/known-gaps.md](docs/known-gaps.md)
 
 那份文档记录**没验证的事、遗留问题、与计划不同之处**。
-最重要的几条：**HTML 报告的图表从未在浏览器里打开过**；
-**Track B 两条用例没跑过真模型**（只知道「可解」，不知道「模型解得开」）；
-**golden 的 17/17 一致属于循环论证**（是在推导它的那批 run 上评估的）。
-`docs/known-gaps.md` 是每次里程碑完成时更新的。
+最重要的几条（2026-09-20 更新）：
+
+- **19 条用例三次全量真跑：pass_rate 0.842 / pass@k 0.947 / flaky 0.105**
+  （`--repeat 3`，成本 $0.227）。但 **n=3 仍小**，别把 0.842 当精确值
+- **`ok=False` 时工具输出曾被整段丢弃**（§1.6.8）—— 42 个结果、80,096 字符，
+  12/19 条受影响。修完 pass_rate 涨 10.5 个百分点。
+  **这是全项目影响最大的 bug，而四道门一道都没拦住**
+- **8/19 条是「修好了没收工」** —— 模型不主动调 `finish`。
+  这是当前最可行动的一条（§4.3）
+- **推理内容已进 judge 与报告，但刻意不做评分** —— 三种「推理质量」的代理信号
+  在真实数据上全部无相关性（§2.6）
+- **golden 在留出数据上 15/17 = 88.2%**（不再是 100% 的循环论证）；
+  两条不一致的恰好都是陷阱用例
+
+`docs/known-gaps.md` 是每次里程碑完成时更新的。它的 **§4.4** 是"这个项目
+最终证明了什么"的一句话版。
 
 ### 用例集的两条轨道
 
@@ -31,7 +43,9 @@
 | 源树 | `examples/toyrepo`（自建 `csvlite`，平铺布局） | `examples/vendor/itsdangerous-*`（真实 OSS，`src/` 布局） |
 | bug 来源 | 数据表里的一段字符串对调 | **反向一个真实上游 commit**（`revert_patch`） |
 | 隐藏测试 | 套共享 header 渲染（`what`/`imports`/`body`） | 手写的整份文件（`hidden_source`） |
-| golden | 有（录制自真跑） | **没有** —— 没跑过真模型，不能编 |
+| golden | 有（录制自真跑） | 有（2026-09-19 从 `--repeat 3` 那批录的） |
+
+跑起来：`uv run harness run -s suites/codefix --evaluate --repeat 3 -m deepseek-flash --provider deepseek`。
 
 改用例：改 `scripts/build_cases.py` 的数据表再跑那个脚本；Track B 另需
 `examples/upstream/<case_id>/`（上游补丁 + 隐藏测试，见该目录的 README）。

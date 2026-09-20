@@ -3,8 +3,13 @@
 驱动被测 agent 完成任务、完整记录过程事件、用多维度评测器打分并生成报告。
 **不只回答"过没过"，而是回答"为什么没过"。**
 
-> **状态**：M0–M11 完成。四个门全绿（`pytest` / `ruff` / `pyright` / `lint-imports`），
-> 全部测试**离线、零 LLM 调用**。已知边界见 [docs/known-gaps.md](docs/known-gaps.md)。
+> **状态**：M0–M11 完成，**1206 条测试**全绿，四个门全绿
+> （`pytest` / `ruff` / `pyright` / `lint-imports`），全部测试**离线、零 LLM 调用**。
+>
+> 19 条用例三次真实全量跑（`deepseek-flash`，$0.227）：
+> **pass_rate 0.842 · pass@k 0.947 · flaky_rate 0.105**。
+> 已知边界与"这些数字不能证明什么"见 [docs/known-gaps.md](docs/known-gaps.md)，
+> 其中 **§4.4** 是这个项目最终证明了什么的一句话版。
 
 ---
 
