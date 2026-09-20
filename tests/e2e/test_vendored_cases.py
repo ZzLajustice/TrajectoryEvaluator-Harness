@@ -161,48 +161,6 @@ def test_doing_nothing_fails_rather_than_errors(
     assert result.metrics["outcome_pass"] == 0.0
 
 
-# ---- 过程级：没有 golden 时必须是 SKIPPED ----
-@pytest.mark.parametrize("case_id,path,marker", CASES, ids=[c[0] for c in CASES])
-def test_the_matcher_skips_instead_of_crashing_without_a_golden(
-        case_id, path, marker, tmp_path):
-    """★★ 没有 `golden.yaml` 时必须是 SKIPPED，**不能是 ERROR**。
-
-    Track B 录不出 golden —— golden 的来源是**真实 run**，
-    而这两条还没跑过真模型。
-
-    这里曾经是崩溃：`_resolve_golden` 在没有 golden 时只 `continue`，
-    于是 `TrajectoryMatcher` 的配置里少了 `expected`，而它是**必填**的
-    （有意必填：手写 suite 把名字拼错时要当场炸）——
-    构造期 `TypeError: missing 1 required keyword-only argument`。
-
-    17 条用例**全都有 golden**，所以那条分支从来没被执行过，
-    "没有它时这条用例不挂过程分"这句话只写在文档里。
-    Track B 第一次真跑就把它撞出来了。
-
-    这条测试盯的是**那句话在行为上成立**。
-    """
-    outcome = _run(case_id, [
-        {"tool": "finish", "arguments": {"summary": "nothing to do"}},
-    ], tmp_path)
-    matcher = _eval(outcome, "TrajectoryMatcher")
-    assert matcher.status.value == "skipped", matcher.model_dump_json(indent=2)
-
-
-def test_these_cases_really_have_no_golden():
-    """守卫上一条的前提：它测的是"没有 golden 时会怎样"。
-
-    哪天给这两条录了 golden，`test_the_matcher_skips_...` 会红 ——
-    而那时该做的是**删掉那条测试**，不是给 golden 改坏。
-    写成显式断言，比让下一个人对着红灯猜要省事。
-    """
-    for case_id, _path, _marker in CASES:
-        assert not (SUITE / "cases" / case_id / "golden.yaml").exists(), (
-            f"{case_id} 现在有 golden.yaml 了。"
-            f"如果它来自真实 run 的录制，就把 "
-            f"test_the_matcher_skips_instead_of_crashing_without_a_golden 删掉；"
-            f"如果是编出来的，别放进来 —— 见 docs/known-gaps.md §1.6.4。")
-
-
 # ---- 守卫：上面那张参数表本身 ----
 def test_the_table_matches_what_is_on_disk():
     """★ 参数表是手写的，所以它自己也要有人盯。

@@ -263,10 +263,12 @@ class RunBuilder:
         max_cost: float | None = None,
         model: str | None = None,
         provider: str | None = None,
+        repeat: int | None = None,
     ) -> list[RunOutcome]:
         return asyncio.run(self.run_suite(
             suite_path, evaluate=evaluate, concurrency=concurrency,
             case_ids=case_ids, max_cost=max_cost, model=model, provider=provider,
+            repeat=repeat,
         ))
 
     async def run_suite(
@@ -279,6 +281,7 @@ class RunBuilder:
         max_cost: float | None = None,
         model: str | None = None,
         provider: str | None = None,
+        repeat: int | None = None,
     ) -> list[RunOutcome]:
         suite = load_suite(suite_path)
         # 命令行覆盖 suite 的 defaults —— 换模型不该逼人改 suite 文件
@@ -287,6 +290,21 @@ class RunBuilder:
                 **({"model": model} if model else {}),
                 **({"provider": provider} if provider else {}),
             })
+        # ★ `--repeat N` 直接写到**每条 case** 上，不走 defaults。
+        #
+        # 走 defaults 的话，得先确认 `_load_suite_dir` 把 defaults 合并进了
+        # case —— 而这个项目已经栽过"配置看着配了、实际没生效"好几次。
+        # 直接写每条 case 没有那层不确定性。
+        #
+        # 为什么需要这个开关：`CaseOutcome` 的 docstring 里写着
+        # "`--repeat 3` 会产生三条 run"，**而那个参数一直不存在**。
+        # 于是 `repeat` 只能靠改 suite 文件设置，默认 1 —— 而 `flaky_rate`
+        # 在 repeat=1 时恒为 0，"稳定"与"只采了一次"在报告里长得一样。
+        if repeat is not None:
+            if repeat < 1:
+                raise SuiteConfigError(f"--repeat must be >= 1, got {repeat}")
+            for case in suite.cases:
+                case.repeat = repeat
         cases = _select_cases(suite, case_ids)
 
         # ★ 装配期能失败的东西，一律在**调度器之前**校验。

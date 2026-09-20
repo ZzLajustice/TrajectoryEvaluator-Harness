@@ -83,6 +83,10 @@ def run(
         None, "--model", "-m", help="覆盖 suite 的模型名（如 deepseek-v4-flash）。"),
     provider: str | None = typer.Option(
         None, "--provider", help="覆盖 suite 的 provider（如 deepseek）。"),
+    repeat: int | None = typer.Option(
+        None, "--repeat",
+        help="每条用例跑几次。缺省 1 —— 而 repeat=1 时 flaky_rate 恒为 0，"
+             "「稳定」与「只采了一次」在报告里长得一样。要谈通过率就给到 3。"),
 ) -> None:
     """运行一个 suite 并打印每条 run 的摘要。
 
@@ -104,6 +108,7 @@ def run(
         outcomes = builder.run_suite_sync(
             suite, evaluate=evaluate, concurrency=concurrency, case_ids=case,
             max_cost=max_cost, model=model, provider=provider,
+            repeat=repeat,
         )
     except _CONFIG_ERRORS as exc:
         typer.echo(f"config error: {exc}", err=True)

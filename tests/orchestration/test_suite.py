@@ -175,3 +175,63 @@ def test_case_spec_coerces_a_dict_task_into_taskspec():
 def test_suite_is_a_public_type():
     """`Suite` 是装配层与报告层共同引用的公开类型，不是内部细节。"""
     assert Suite.model_fields["cases"].is_required()
+
+
+# --------------------------------------------------------------------------
+# 没有 golden.yaml 的用例：必须是 SKIPPED，不是崩溃
+# --------------------------------------------------------------------------
+_NO_GOLDEN = """\
+name: demo
+defaults:
+  model: {provider: fake, model: fake}
+  budget: {max_turns: 6}
+cases:
+  - case_id: c1
+    tier: easy
+    task: {case_id: c1, prompt: "fix it"}
+    workspace: {kind: tempdir}
+    graders: [{name: TrajectoryMatcher, config: {mode: in_order}}]
+"""
+
+
+async def test_a_case_without_a_golden_loads_and_skips(tmp_path):
+    """★★ 没有 `golden.yaml` 时，`TrajectoryMatcher` 必须是 **SKIPPED**。
+
+    这里曾经是崩溃：`_resolve_golden` 在没有 golden 时只 `continue`，
+    于是配置里少了 `expected` —— 而 `TrajectoryMatcher.__init__` 把它设成了
+    **必填**（有意必填：手写 suite 拼错名字时要当场炸）。
+    结果是构造期 `TypeError: missing 1 required keyword-only argument`，
+    评测器报 **ERROR 而不是 SKIPPED**，而函数 docstring 里那句
+    "没有它时这条用例不挂过程分"只写在文档里，行为上不成立。
+
+    **17 条用例全都有 golden，所以那条分支从来没被执行过** ——
+    直到 Track B 两条没有 golden 的用例第一次真跑把它撞出来。
+
+    ★ 这条测试原来住在 `tests/e2e/test_vendored_cases.py`，靠"Track B
+    恰好没有 golden"成立。那两条**现在有 golden 了**（2026-09-19 录制），
+    于是那条测试连同它的守卫一起被删掉，覆盖搬到这里 ——
+    不再依赖任何具体用例的数据状态，测的是加载器本身的行为。
+    """
+    from harness.contracts.protocols import EvalContext
+    from harness.contracts.results import EvalStatus
+    from harness.evaluators.base import run_evaluators
+    from harness.testing.builder import TrajectoryBuilder
+
+    suite = load_suite(_write(tmp_path, _NO_GOLDEN))
+    (case,) = suite.cases
+    assert case.golden is None, "这条用例本来就没有 golden"
+
+    matcher = next(g for g in case.graders if g.name == "TrajectoryMatcher")
+    assert matcher.config.get("expected") == [], (
+        "没有 golden 时应当注入**空的** expected —— 由 evaluate() 转成 SKIPPED。"
+        f" 实际是 {matcher.config.get('expected')!r}，那会在构造期 TypeError")
+
+    # 端到端确认它真的 SKIP 而不是 ERROR：用配置实例化并跑一次
+    traj = (TrajectoryBuilder(run_id="r", task="t").turn()
+            .llm_response(text="hi").run_end(status="ok").build())
+    from harness.orchestration.evalrunner import build_evaluators
+
+    results = await run_evaluators(
+        build_evaluators([{"name": matcher.name, "config": matcher.config}]),
+        traj, EvalContext())
+    assert results[0].status is EvalStatus.SKIPPED, results[0].model_dump_json()

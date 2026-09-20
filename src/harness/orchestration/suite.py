@@ -290,6 +290,15 @@ def load_suite(path: Suite | Path | str) -> Suite:
     suite = Suite.model_validate(raw)
     suite.source_path = path
     _resolve_hidden_tests(suite, base=path.parent)
+    # ★ 单文件 suite 也要走这一步。
+    #
+    # 它没有 `case.yaml`，因此**永远没有 golden.yaml** —— 而
+    # `TrajectoryMatcher` 的 `expected` 是必填的，少了它评测器报 ERROR
+    # 而不是 SKIPPED（实测：`config={'mode': 'in_order'}` → `error`）。
+    #
+    # 这里曾经只在 `_load_suite_dir` 里调用，于是**目录套件修好了、单文件套件没有**，
+    # 而 `examples/*.yaml` 全是单文件套件。
+    _resolve_golden(suite)
     return suite
 
 
@@ -368,10 +377,16 @@ def _resolve_golden(suite: Suite) -> None:
     而不是拿一个编出来的路径充数。
     """
     for case in suite.cases:
-        if case.source_dir is None:
-            continue
-        path = case.source_dir / "golden.yaml"
-        if not path.is_file():
+        # ★ `source_dir is None`（单文件 suite）也必须走这条路 ——
+        # 它同样没有 golden，而"没有 golden"与"用例是目录还是单文件"无关。
+        #
+        # 分开处理的话，单文件 suite 里声明 `TrajectoryMatcher` 而不写
+        # `expected` 仍会在**实例化时** TypeError → 评测器报 ERROR。
+        # **实测确认过**：`config={'mode': 'in_order'}` → `error`，
+        # 加了 `expected: []` 才是 `skipped`。修目录套件时漏了这条，
+        # 而 `examples/*.yaml` 全是单文件套件。
+        path = (case.source_dir / "golden.yaml") if case.source_dir else None
+        if path is None or not path.is_file():
             # ★ 没有 golden ≠ 崩溃。`TrajectoryMatcher.__init__` 把 `expected`
             #   设成**必填**是有意的：手写 suite 时把它拼错要当场炸，
             #   而不是静默判 SKIPPED。所以"这条用例没有参考路径"必须由
