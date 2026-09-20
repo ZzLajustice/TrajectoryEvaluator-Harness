@@ -235,3 +235,69 @@ async def test_a_case_without_a_golden_loads_and_skips(tmp_path):
         build_evaluators([{"name": matcher.name, "config": matcher.config}]),
         traj, EvalContext())
     assert results[0].status is EvalStatus.SKIPPED, results[0].model_dump_json()
+
+
+# --------------------------------------------------------------------------
+# 假 provider 配空脚本 = 19 条 llm_error
+# --------------------------------------------------------------------------
+_NO_SCRIPT = """\
+name: demo
+defaults:
+  model: {provider: fake, model: fake}
+  budget: {max_turns: 6}
+cases:
+  - case_id: c1
+    tier: easy
+    task: {case_id: c1, prompt: "fix it"}
+    workspace: {kind: tempdir}
+    graders: [{name: EfficiencyAnalyzer}]
+"""
+
+_WITH_SCRIPT = _NO_SCRIPT.replace(
+    "  budget: {max_turns: 6}",
+    "  budget: {max_turns: 6}\n  fake_script: [{text: done}]")
+
+
+def _preflight_ok(tmp_path, text: str) -> bool:
+    """跑一次 preflight，返回它是否放行。"""
+    from harness.orchestration.deps import RunBuilder
+
+    suite = load_suite(_write(tmp_path, text))
+    try:
+        RunBuilder(out_dir=tmp_path / "o", workdir=tmp_path / "w")._preflight(suite)
+        return True
+    except Exception as exc:  # noqa: BLE001 - 这里就是要看它抛不抛
+        print(f"  preflight 拒绝: {type(exc).__name__}: {exc}")
+        return False
+
+
+def test_a_fake_provider_with_no_script_is_rejected_before_any_run(tmp_path):
+    """★★ 假 provider 配空脚本**必须**在跑之前就报错。
+
+    实测（干净 clone 上跑 `suites/codefix`）：默认 provider 是 `fake`
+    而用例没有 `fake_script`，于是**19 条全部 `llm_error`** ——
+    退出码 1、报告里一片红，而真因是"这个 suite 没给假模型台词"。
+
+    `FakeProvider` 对空脚本抛的是 `IndexError('script exhausted')`，
+    那是**为"agent 多调了一次模型"设计的**（刻意不静默重复最后一条响应）。
+    可**空脚本不是"用尽了"** —— 两者完全不同，而消息把它们说成一回事。
+    于是新 clone 的人看到 19 个 `llm_error`，第一反应是"这项目坏了"。
+
+    ★ 校验放在 `_preflight` 而**不是** `load_suite`：加载器跑在
+    `--model/--provider` 覆盖**之前**，放那儿的话 `--model deepseek`
+    也会被拦下 —— 而那正是这条 suite 的正确用法。
+    """
+    assert not _preflight_ok(tmp_path, _NO_SCRIPT), (
+        "假 provider 配空脚本应当被拒绝 —— 否则 19 条用例全部 llm_error，"
+        "而这看起来像项目坏了")
+
+
+def test_a_fake_provider_with_a_script_still_passes_preflight(tmp_path):
+    """守卫：有脚本（哪怕只有一句 text）就放行 —— 否则这条校验会误伤全部假跑。"""
+    assert _preflight_ok(tmp_path, _WITH_SCRIPT)
+
+
+def test_a_real_provider_still_passes_preflight_without_a_script(tmp_path):
+    """守卫：真 provider 不需要 `fake_script`（它的台词来自模型）。"""
+    real = _NO_SCRIPT.replace("provider: fake", "provider: deepseek")
+    assert _preflight_ok(tmp_path, real)

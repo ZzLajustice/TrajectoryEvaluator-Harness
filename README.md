@@ -57,16 +57,33 @@ uv run harness run -s examples/hello.yaml --evaluate
 # 2) 真模型（key 只从环境变量或 .env 读，刻意没有 --api-key）
 uv run harness run -s examples/deepseek.yaml -m deepseek-flash --provider deepseek
 
-# 3) 19 条 codefix 用例 + 隐藏验收测试 + 自包含 HTML 报告
-uv run harness run -s suites/codefix --evaluate --concurrency 4 --max-cost 2.0
-uv run harness report --format html --out report.html
+# 3) 回归门禁（退出码 0 通过 / 1 未达标 / 2 配置错 / 3 超预算 / 4 缺基线）
+#    traps 是脚本化的 9 条失败模式，离线且确定性 —— 基线已随仓库提供
+uv run harness run -s examples/traps.yaml --evaluate
+uv run harness ci -s examples/traps.yaml --baseline baselines/traps.json --fail-under 0.5
 
-# 4) 回归门禁（退出码 0 通过 / 1 未达标 / 2 配置错 / 3 超预算 / 4 缺基线）
-uv run harness ci -s suites/codefix --baseline baselines/v1.json --fail-under 0.7
+# 4) 19 条 codefix 用例（真实 OSS 仓库那两条也在内）+ 自包含 HTML 报告
+#    ★ 这一条需要真模型：key 从环境变量或 .env 读。
+#    不给 `-m/--provider` 的话它会在**跑之前**报配置错并说明原因，
+#    而不是给你 19 条 llm_error。
+uv run harness run -s suites/codefix --evaluate --repeat 3     -m deepseek-flash --provider deepseek --max-cost 2.0
+uv run harness report --format html --out report.html
 ```
+
+### 哪些命令不需要 API key
+
+| 命令 | 需要 key | 说明 |
+|---|---|---|
+| `run -s examples/hello.yaml` | 否 | 最小闭环，1 条用例 |
+| `run -s examples/traps.yaml` | 否 | 9 条脚本化失败模式，确定性 |
+| `run -s examples/judged.yaml` | 否 | **双 harness 对称性**的离线演示（含 `MetaEvaluator`） |
+| `run -s examples/concurrency.yaml` | 否 | 并发压测 |
+| `run -s suites/codefix` | **是** | 19 条真实用例 —— 默认 provider 是 fake 而没有台词，会在启动时报错 |
+| `run -s examples/deepseek.yaml` | **是** | 真 provider 冒烟 |
 
 `--baseline` 指向一份**手动保存**的 `runs/latest.json`（快照会被每次 run 覆盖，
 这是已知边界之一，见 [docs/known-gaps.md](docs/known-gaps.md) §2.4）。
+`baselines/traps.json` 就是 `cp /tmp/runs/latest.json baselines/traps.json` 来的。
 
 五个命令：`run` / `trace` / `report` / `diff` / `ci`。
 

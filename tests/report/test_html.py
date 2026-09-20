@@ -265,3 +265,22 @@ def test_the_reasoning_metric_is_defined_in_the_footnote(tmp_path):
     """
     html = _render(tmp_path)
     assert "推理消耗的 token 数" in html
+
+
+def test_the_metric_definitions_have_one_source():
+    """★★ 指标口径只能有**一份**定义。
+
+    它被测两份：`terminal.py` 给终端脚注用，`html.py` 给 HTML 脚注用。
+    而它们各自定义了一遍 —— 于是**已经漂了**：加 `reasoning_tokens` 时
+    只加进了 html 那份，终端脚注还是 4 条，HTML 脚注 5 条。
+
+    这正是这个项目反复批判的模式（评测器白名单、分层表、golden）：
+    **两处真相必然漂移，而漂移的方向恰好是"看哪份都能自圆其说"。**
+    唯一能持续成立的做法是让它们物理上是同一个对象。
+    """
+    from harness.report import html as html_mod
+    from harness.report import terminal as terminal_mod
+
+    assert html_mod.METRIC_DEFINITIONS is terminal_mod.METRIC_DEFINITIONS, (
+        "指标口径被定义了两次。改一处漏一处时，终端与 HTML 报告的脚注会"
+        "描述不同的口径 —— 而两份看起来都正常")

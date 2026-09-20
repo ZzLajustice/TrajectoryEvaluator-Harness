@@ -213,6 +213,34 @@ class RunBuilder:
                 resolve_endpoint(
                     ModelRef(provider=judge.provider, model=judge.model), role="judge"
                 )
+            self._require_fake_script(suite)
+
+    def _require_fake_script(self, suite: Suite) -> None:
+        """★ 假 provider 配空脚本 = 每条用例一个 `llm_error`。在跑之前拦住。
+
+        `FakeProvider` 对空脚本抛的是 `IndexError('script exhausted')` ——
+        那是**为"agent 多调了一次模型"设计的**（刻意不静默重复最后一条响应）。
+        但**空脚本不是"用尽了"**：前者是配置缺失，后者是 agent 行为异常。
+        两者同一个报错，于是新 clone 的人跑 `suites/codefix` 会看到
+        **19 条 `llm_error`**，第一反应是"这项目坏了"，而真因只是
+        "这个 suite 没给假模型台词"。
+
+        ★ 放在 `_preflight` 而不是 `load_suite`：加载器跑在
+        `--model/--provider` 覆盖**之前**，放那儿会把 `--model deepseek`
+        也拦下 —— 而那正是这条 suite 的正确用法。
+        """
+        for case in suite.cases:
+            if not is_fake(suite.defaults.model.provider):
+                continue
+            if suite.fake_script_for(case):
+                continue
+            raise SuiteConfigError(
+                f"case {case.case_id!r}: provider is fake but the case has no "
+                f"`fake_script`. A fake provider with nothing to say fails every "
+                f"model call, so the whole suite would report `llm_error` — which "
+                f"looks like a broken project rather than a missing script.\n"
+                f"  Either give the case (or `defaults`) a `fake_script`, or run "
+                f"against a real model: `-m <model> --provider <vendor>`.")
 
     # ---- provider ----
     def _build_provider(self, model: ModelRef, script: list[dict[str, Any]],

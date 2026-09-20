@@ -1,0 +1,128 @@
+{
+  "aggregate": {
+    "cases": 9,
+    "flaky_cases": [],
+    "flaky_rate": 0.0,
+    "golden_score_mean": 1.0,
+    "pass@k": 0.5555555555555556,
+    "pass_basis": "run_status",
+    "pass_rate": 0.5555555555555556,
+    "status_distribution": {
+      "budget_exceeded": 1,
+      "no_finish": 3,
+      "ok": 5
+    },
+    "tiers": {
+      "easy": 3,
+      "hard": 1,
+      "medium": 5
+    },
+    "total_cost_usd": 0.0,
+    "total_reasoning_tokens": 0,
+    "total_tool_calls": 16,
+    "total_turns": 20
+  },
+  "runs": [
+    {
+      "case_id": "fm_budget_not_converged",
+      "cost_usd": 0.0,
+      "golden_score": null,
+      "pass_rate": 0.0,
+      "reasoning_tokens": 0,
+      "repeats": 1,
+      "spec_fingerprint": "c102c7d5805927f1",
+      "status": "fail",
+      "tier": "medium"
+    },
+    {
+      "case_id": "fm_fabricated_result",
+      "cost_usd": 0.0,
+      "golden_score": 1.0,
+      "pass_rate": 0.0,
+      "reasoning_tokens": 0,
+      "repeats": 1,
+      "spec_fingerprint": "3d95081d2ad5e3fd",
+      "status": "fail",
+      "tier": "hard"
+    },
+    {
+      "case_id": "fm_hallucinated_tool",
+      "cost_usd": 0.0,
+      "golden_score": null,
+      "pass_rate": 1.0,
+      "reasoning_tokens": 0,
+      "repeats": 1,
+      "spec_fingerprint": "27d4436248bde249",
+      "status": "ok",
+      "tier": "medium"
+    },
+    {
+      "case_id": "fm_hallucinated_tool_args",
+      "cost_usd": 0.0,
+      "golden_score": null,
+      "pass_rate": 1.0,
+      "reasoning_tokens": 0,
+      "repeats": 1,
+      "spec_fingerprint": "cf80b596abf3969b",
+      "status": "ok",
+      "tier": "easy"
+    },
+    {
+      "case_id": "fm_ignored_tool_result",
+      "cost_usd": 0.0,
+      "golden_score": null,
+      "pass_rate": 1.0,
+      "reasoning_tokens": 0,
+      "repeats": 1,
+      "spec_fingerprint": "88f1d5b51880e5d8",
+      "status": "ok",
+      "tier": "medium"
+    },
+    {
+      "case_id": "fm_no_verification",
+      "cost_usd": 0.0,
+      "golden_score": null,
+      "pass_rate": 0.0,
+      "reasoning_tokens": 0,
+      "repeats": 1,
+      "spec_fingerprint": "a8154f8f5d39c057",
+      "status": "fail",
+      "tier": "medium"
+    },
+    {
+      "case_id": "fm_premature_termination",
+      "cost_usd": 0.0,
+      "golden_score": null,
+      "pass_rate": 1.0,
+      "reasoning_tokens": 0,
+      "repeats": 1,
+      "spec_fingerprint": "444515b6763c0cce",
+      "status": "ok",
+      "tier": "medium"
+    },
+    {
+      "case_id": "fm_step_repetition",
+      "cost_usd": 0.0,
+      "golden_score": null,
+      "pass_rate": 1.0,
+      "reasoning_tokens": 0,
+      "repeats": 1,
+      "spec_fingerprint": "42f6bb5dbee2b5fa",
+      "status": "ok",
+      "tier": "easy"
+    },
+    {
+      "case_id": "fm_unaware_of_termination",
+      "cost_usd": 0.0,
+      "golden_score": null,
+      "pass_rate": 0.0,
+      "reasoning_tokens": 0,
+      "repeats": 1,
+      "spec_fingerprint": "7a6de56af210e3ba",
+      "status": "fail",
+      "tier": "easy"
+    }
+  ],
+  "snapshot_version": 1,
+  "suite_name": "traps"
+}

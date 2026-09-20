@@ -32,6 +32,10 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from harness.report.terminal import (
+    METRIC_DEFINITIONS as _TERMINAL_METRICS,
+)
+
 _HERE = Path(__file__).parent
 _TEMPLATES = _HERE / "templates"
 _STATIC = _HERE.parent / "static"
@@ -105,13 +109,10 @@ def render_report(data: dict[str, Any], out_path: Path | str) -> Path:
     return path
 
 
-# 指标口径写进报告脚注 —— 数字离开口径就是噪音
-METRIC_DEFINITIONS = {
-    "pass_rate": "所有 repeat 都通过的 case 占比",
-    "pass@k": "至少一次通过的 case 占比（不是经典 pass@k 无偏估计量）",
-    "flaky_rate": "通过率严格落在 (0,1) 之间的 case 占比",
-    "golden_score": "轨迹匹配分（过程分），与 outcome 分列，不做加权",
-    # 它容易**被读成分数**，所以口径必须写死：它量的是"看不见的产出有多少"，
-    # 不是"模型想得好不好"。实测三种推理质量的代理信号与结果都无相关性。
-    "reasoning_tokens": "模型推理消耗的 token 数（体量，不是质量分）",
-}
+# 指标口径只有一份，住在 `terminal.py`（CLAUDE.md 里记的就是那个位置）。
+#
+# ★ 这里曾经**又定义了一遍**，于是已经漂了：加 `reasoning_tokens` 时
+#   只加进了这一份，终端脚注还是 4 条 —— 两份报告描述不同的口径，
+#   而各自看起来都正常。`test_the_metric_definitions_have_one_source`
+#   现在盯着它们是同一个对象。
+METRIC_DEFINITIONS = _TERMINAL_METRICS

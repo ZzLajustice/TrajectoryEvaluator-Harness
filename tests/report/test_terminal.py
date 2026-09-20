@@ -134,8 +134,15 @@ def test_metric_definitions_are_documented_in_the_report_footnote():
 
     `pass@k` 在本项目里是「至少一次通过的 case 占比」，不是经典那个无偏估计量。
     名字沿用业界叫法但语义不同，不写明就一定会被读错。
+
+    ★ 断言刻意是**子集**不是相等。原来写的是 `== {四条}`，那等于说
+    "**只有**这四条" —— 于是加第五条指标（`reasoning_tokens`）时它红了，
+    而它想说的其实是"这四条**必须**在"。测"必须包含"就别写成"恰好等于"：
+    后者会让每一次合理的扩充都变成一次假警报，久了就没人看红灯了。
     """
-    assert set(METRIC_DEFINITIONS) == {"pass_rate", "pass@k", "flaky_rate", "golden_score"}
+    required = {"pass_rate", "pass@k", "flaky_rate", "golden_score"}
+    assert required <= set(METRIC_DEFINITIONS), (
+        f"这些口径没有写进报告：{sorted(required - set(METRIC_DEFINITIONS))}")
     note = metric_footnote()
     assert "无偏估计量" in note
     assert "分列" in note
