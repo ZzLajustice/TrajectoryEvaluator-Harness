@@ -289,6 +289,7 @@ def load_suite(path: Suite | Path | str) -> Suite:
         )
     suite = Suite.model_validate(raw)
     suite.source_path = path
+    _resolve_workspace_paths(suite, base=path.parent)
     _resolve_hidden_tests(suite, base=path.parent)
     # ★ 单文件 suite 也要走这一步。
     #
@@ -444,6 +445,47 @@ def _repo_root(start: Path) -> Path:
             return candidate
     raise SuiteConfigError(
         f"cannot locate the repository root above {start} (no pyproject.toml found)")
+
+
+def _resolve_workspace_paths(suite: Suite, *, base: Path) -> None:
+    """把单文件 suite 的 `source` / `patch` / `overlay` 解析成绝对路径。
+
+    ## 为什么需要这个函数
+
+    目录形 suite 一直在 `_load_suite_dir` 里做这件事，而**单文件路径从来没做过** ——
+    路径被原样留下，于是 `patch: ../suites/.../bug.patch` 会相对 **cwd** 解析。
+    实测确认过：`load_suite()` 之后 `workspace.patch` 还是那串相对路径。
+
+    这个 bug 的形状与项目里其它几个一样 —— **不报错，只是解析到别处**。
+    最终会以"补丁打不上"的形式暴露，而没人会想到是路径基准错了。
+
+    ## 基准与目录形保持一致
+
+        `source`   → **仓库根**（生成器就是这么写的，也是 README 里写的约定）
+        `patch` / `overlay` → **suite 文件所在目录**
+
+    ## 什么时候找仓库根
+
+    只在 `source` **存在且是相对路径**时才找。否则一个用 `tempdir`、
+    又没有 `source` 的 suite（`examples/traps.yaml` 就是）会被这个函数
+    逼着去当仓库的一部分 —— 而它与仓库根没有任何关系。
+    """
+    needs_root = any(
+        case.workspace.kind == "copy" and case.workspace.source
+        and not Path(case.workspace.source).is_absolute()
+        for case in suite.cases
+    )
+    root = _repo_root(base) if needs_root else None
+
+    for case in suite.cases:
+        ws = case.workspace
+        if ws.source and not Path(ws.source).is_absolute():
+            # `needs_root` 为真时 root 一定有值
+            ws.source = str((root if root else base) / ws.source)
+        for key in ("patch", "overlay"):
+            raw_path = getattr(ws, key)
+            if raw_path and not Path(raw_path).is_absolute():
+                setattr(ws, key, str((base / raw_path).resolve()))
 
 
 def _resolve_hidden_tests(suite: Suite, *, base: Path) -> None:

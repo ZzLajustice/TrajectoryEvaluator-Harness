@@ -316,3 +316,55 @@ def test_a_real_provider_needs_no_fake_script(tmp_path):
         tmp_path, _NO_SCRIPT.replace("provider: fake", "provider: deepseek")))
     # 不抛就是通过 —— 真 provider 的凭据解析是另一件事，有它自己的测试
     RunBuilder(out_dir=tmp_path / "o", workdir=tmp_path / "w")._require_fake_script(suite)
+
+
+def test_a_single_file_suite_resolves_workspace_paths_relative_to_itself(tmp_path):
+    """★★ 单文件 suite 的 `source` / `patch` / `overlay` 必须相对**它自己**解析。
+
+    目录形 suite 一直是这么做的（`_load_suite_dir` 里那一段），
+    而单文件路径**从来没做过** —— 路径被原样留下，于是：
+    `patch: ../suites/.../bug.patch` 会相对 **cwd** 解析。
+
+    **实测确认过**：`load_suite()` 之后 `workspace.patch` 还是那串相对路径。
+
+    这个 bug 的形状与项目里其它几个一样 —— **不报错，只是解析到别处**。
+    而 `_apply_patch` 比对字节、`git apply` 打不上就报错，
+    所以最终会以"补丁打不上"的形式暴露，而没人会想到是路径基准错了。
+
+    `source` 与目录形保持一致，以**仓库根**为基准（生成器就是这么写的）；
+    `patch` / `overlay` 以 **suite 文件所在目录**为基准。
+    """
+    # 让它成为一个"仓库"：`source` 以仓库根为基准，而仓库根靠 pyproject.toml 找
+    (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    root = tmp_path
+    (tmp_path / "bug.patch").write_text("x", encoding="utf-8")
+    (tmp_path / "fixture").mkdir()
+    text = """\
+name: t
+defaults: {model: {provider: fake, model: fake}}
+cases:
+  - case_id: c1
+    tier: easy
+    task: {case_id: c1, prompt: "x"}
+    workspace:
+      kind: copy
+      source: examples/toyrepo
+      patch: ../bug.patch
+      overlay: fixture
+    graders: [{name: OutcomeGrader}]
+"""
+    suite = load_suite(_write(tmp_path, text))
+    ws = suite.cases[0].workspace
+
+    # 三个都断言"非 None 且已绝对化" —— 少了 None 检查，pyright 会正确地报错，
+    # 而 `Path(None)` 在运行期才炸（TypeError），看不到的那天才发现。
+    for label, value in (("source", ws.source), ("patch", ws.patch),
+                         ("overlay", ws.overlay)):
+        assert value, f"`{label}` 丢了：{value!r}"
+        assert Path(value).is_absolute(), (
+            f"`{label}` 没被解析：{value!r} —— 它会相对 cwd 解析，而不是 suite 文件")
+    # source 以仓库根为基准（与目录形一致）
+    assert Path(ws.source or "") == root / "examples" / "toyrepo"
+    # patch / overlay 以 suite 文件所在目录为基准
+    assert Path(ws.patch or "") == (tmp_path / "../bug.patch").resolve()
+    assert Path(ws.overlay or "") == (tmp_path / "fixture").resolve()

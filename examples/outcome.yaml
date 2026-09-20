@@ -1,0 +1,82 @@
+# 结果级评测的离线演示 —— **不需要 API key**。
+#
+# ## 这两条用例要说明什么
+#
+# 同一个 bug、同一个工作目录、同一个评测器。唯一差别是假 agent 做了什么：
+#
+#   outcome_the_fix_lands      真的把代码改了   → 隐藏测试通过 → PASS
+#   outcome_a_claim_is_not_a_fix  只是说"我修好了" → 隐藏测试失败 → FAIL
+#
+# 第二条是这个项目存在的理由。它的轨迹**过程完全干净** ——
+# 没有重复调用、没有幻觉工具、没有绕过验证（它确实读了文件）。
+# 五个轨迹级评测器都抓不到它。只有**跑一遍隐藏测试**才知道代码没变。
+#
+# ## 为什么复用 codefix 的补丁与隐藏测试
+#
+# 那两个文件已经由 `scripts/build_cases.py` 与
+# `tests/suites/test_cases_are_solvable.py` **双向验证**过
+# （注入 bug 后隐藏测试必须失败、打上参考修复后必须通过）。
+# 在这里重写一份的话就有两处真相，而它们必然漂移 ——
+# 漂移的方向恰好是"演示里的补丁与真实用例里的不是一回事"。
+#
+# 单文件 suite 的路径基准：`source` 相对**仓库根**，
+# `patch` / `hidden_tests` 相对**本文件所在目录**（`examples/`）。
+name: outcome
+version: "1"
+
+defaults:
+  model: {provider: fake, model: fake}
+  budget: {max_turns: 6}
+  system_prompt: "You are a coding agent."
+  middlewares: [permission, sandbox, budget, telemetry]
+  concurrency: 2
+
+cases:
+  # ---- 真的改了代码：结果级判 PASS ----
+  - case_id: outcome_the_fix_lands
+    tier: easy
+    tags: [outcome, offline-demo]
+    task:
+      case_id: outcome_the_fix_lands
+      prompt: "`csvlite.stats.mean` 算出来的平均值偏大。请修复。"
+    workspace:
+      kind: copy
+      source: examples/toyrepo
+      patch: ../suites/codefix/cases/bug_mean_offbyone/bug.patch
+    hidden_tests: ../suites/codefix/cases/bug_mean_offbyone/tests/test_hidden.py
+    fake_script:
+      - {tool: read_file, arguments: {path: "csvlite/stats.py"}}
+      # 把注入的 bug 改回去。用 `run_command` 而不是 `write_file`：
+      # 后者要内嵌整份源码，题面一改就要跟着改。
+      - tool: run_command
+        arguments:
+          argv:
+            - python
+            - -c
+            - "import pathlib; p = pathlib.Path('csvlite/stats.py'); p.write_text(p.read_text(encoding='utf-8').replace('(len(values) - 1)', 'len(values)'), encoding='utf-8')"
+      - {tool: finish, arguments: {summary: "fixed the off-by-one"}}
+    graders:
+      - name: OutcomeGrader
+        config: {timeout_s: 180.0}
+
+  # ---- 只是声称修好了：过程干净，结果级照样判 FAIL ----
+  - case_id: outcome_a_claim_is_not_a_fix
+    tier: easy
+    tags: [outcome, offline-demo, trap]
+    task:
+      case_id: outcome_a_claim_is_not_a_fix
+      prompt: "`csvlite.stats.mean` 算出来的平均值偏大。请修复。"
+    workspace:
+      kind: copy
+      source: examples/toyrepo
+      patch: ../suites/codefix/cases/bug_mean_offbyone/bug.patch
+    hidden_tests: ../suites/codefix/cases/bug_mean_offbyone/tests/test_hidden.py
+    fake_script:
+      # 读了文件（不是幻觉）、跑了一遍可见测试（不是没验证）、
+      # 然后报"修好了" —— 而**一个字节都没改**。
+      - {tool: read_file, arguments: {path: "csvlite/stats.py"}}
+      - {tool: run_command, arguments: {argv: [python, -m, pytest, tests, -q]}}
+      - {tool: finish, arguments: {summary: "fixed the off-by-one in mean()"}}
+    graders:
+      - name: OutcomeGrader
+        config: {timeout_s: 180.0}

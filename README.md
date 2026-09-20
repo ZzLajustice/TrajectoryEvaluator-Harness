@@ -26,19 +26,24 @@ uv run pytest               # 确认装对了：1210 条测试，零 LLM 调用
 
 ### 没有 API key
 
-全部业务链路都能跑 —— 用假 provider，零网络、零成本、结果确定性。
+全部评测业务都能跑 —— 假 provider，零网络、零成本、结果确定性。
 
-| 能做什么 | 命令 |
+| 评测业务 | 命令 |
 |---|---|
-| 最小闭环（1 条用例） | `uv run harness run -s examples/hello.yaml --evaluate` |
-| **双 harness 对称**（judge + 元评测） | `uv run harness run -s examples/judged.yaml --evaluate` |
-| 9 条脚本化失败模式 | `uv run harness run -s examples/traps.yaml --evaluate` |
-| 并发压测 | `uv run harness run -s examples/concurrency.yaml` |
-| 报告（终端 / HTML） | `uv run harness report -f html --out report.html` |
-| 回归门禁 | `uv run harness ci -s examples/traps.yaml --baseline baselines/traps.json --fail-under 0.5` |
-| 轨迹 / 对比 | `uv run harness trace --run-id <id>` · `uv run harness diff --baseline <a> --current <b>` |
-| 校验用例集可解性 | `uv run python scripts/build_cases.py --check` |
-| 全部测试 | `uv run pytest` |
+| **轨迹匹配** —— 走的是不是一条合理路径（过程分） | `uv run harness run -s examples/hello.yaml --evaluate` |
+| **结果级评测** —— 代码到底改对没有。含一条**反例**：假 agent 过程干净、声称修好了、其实一个字节没改，只有隐藏测试戳得穿 | `uv run harness run -s examples/outcome.yaml --evaluate` |
+| **失败模式分类**（12 个模式）+ **幻觉工具输出检测** | `uv run harness run -s examples/traps.yaml --evaluate` |
+| **元评测** —— judge 一致性 / 成本 / 抗注入，走**双 harness 对称**的同一个 `Run` | `uv run harness run -s examples/judged.yaml --evaluate` |
+| **效率分析** —— 步数 / token / 成本 / 冗余调用 / 推理体量 | `uv run harness run -s examples/concurrency.yaml` |
+
+另外四件不是评测器的事：
+
+| 能力 | 命令 |
+|---|---|
+| 报告（终端 / HTML，指标分列） | `uv run harness report -f html --out report.html` |
+| 回归门禁（baseline diff + 退出码契约） | `uv run harness ci -s examples/traps.yaml --baseline baselines/traps.json --fail-under 0.5` |
+| 轨迹查看 / 快照对比 | `uv run harness trace --run-id <id>` · `uv run harness diff --baseline <a> --current <b>` |
+| 用例集自检（19 条补丁的双向可解性） | `uv run python scripts/build_cases.py --check` |
 
 ### 有 API key
 
@@ -48,12 +53,12 @@ uv run pytest               # 确认装对了：1210 条测试，零 LLM 调用
 cp .env.example .env          # 填上 DEEPSEEK_API_KEY
 ```
 
-| 能做什么 | 命令 |
+| 评测业务 | 命令 |
 |---|---|
 | 真 provider 冒烟 | `uv run harness run -s examples/deepseek.yaml -m deepseek-flash --provider deepseek` |
-| **19 条 codefix 用例**（含 2 条真实 OSS 仓库），约 $0.07 / 次 | `uv run harness run -s suites/codefix --evaluate -m deepseek-flash --provider deepseek` |
-| 多次采样看 flaky（`--repeat 3` ≈ $0.22） | 上面加 `--repeat 3` |
-| 真模型 judge + 元评测 | `uv run harness run -s examples/judged_deepseek.yaml --evaluate` |
+| **19 条真实用例的结果级评测**（含 2 条真实 OSS 仓库），约 $0.07 / 次 | `uv run harness run -s suites/codefix --evaluate -m deepseek-flash --provider deepseek` |
+| **flaky 观测** —— 多次采样，`flaky_rate` 才有意义（约 $0.22） | 上面加 `--repeat 3` |
+| **真模型 judge + 元评测** | `uv run harness run -s examples/judged_deepseek.yaml --evaluate` |
 
 > 不给 `-m/--provider` 的话（默认是假 provider）会在**启动时**报配置错并说明原因，
 > 而不是给你 19 条 `llm_error`。
