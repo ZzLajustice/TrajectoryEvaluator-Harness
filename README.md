@@ -14,9 +14,15 @@
 
 ## 快速开始
 
+本项目用 [uv](https://docs.astral.sh/uv/) 管环境与依赖。装好 uv 后：
+
 ```bash
-uv sync --all-groups
+uv sync --all-groups        # 建环境并装依赖
+uv run pytest               # 确认装对了：1210 条测试，零 LLM 调用
 ```
+
+不需要自己准备 Python —— `uv sync` 会按 `requires-python` 自动拉 3.12，
+本机已有别的版本也不影响。之后所有命令都是 `uv run <命令>`，**不用手动 activate**。
 
 ### 没有 API key
 
@@ -220,7 +226,6 @@ uv run pytest tests/e2e/test_dual_harness.py -v   # 对称性不是靠读代码�
 | [设计文档](docs/superpowers/specs/2026-09-14-agent-eval-harness-design.md) | 系统设计、架构决策与理由、风险清单 |
 | [技术选型](docs/tech-stack.md) | 每个依赖为什么选它、版本约束、核实证据 |
 | [实现计划](docs/superpowers/plans/) | 分任务的 TDD 步骤（Part 1/2/3，共 36 个任务） |
-| [教学文档](docs/learning/) | 逐任务讲解（目标 / 流程 / 实现 / 技术栈 / 工程思想） |
 | [**已知边界**](docs/known-gaps.md) | **没验证的事、遗留问题、与计划不同之处** |
 
 ```bash
