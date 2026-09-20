@@ -132,12 +132,43 @@ def test_model_flag_overrides_the_suite_default():
     assert suite.defaults.model.provider == "deepseek"  # provider 没被动
 
 
+def _run_params():
+    """`run` 命令**真实的**参数列表 —— 与 help 文本无关，因此与终端环境无关。
+
+    鸭子类型而不是 isinstance：typer 的 TyperGroup **不是** click.Group 的子类
+    （实测 isinstance 判 False），断言具体类型会变成测 typer 的内部结构。
+    """
+    import typer.main
+
+    commands = getattr(typer.main.get_command(app), "commands", None)
+    assert commands is not None, "CLI 的形状变了，这两条测试需要重写"
+    return list(commands["run"].params)
+
+
+def _run_flags() -> set[str]:
+    """`run` 接受的旗帜（`--suite` / `-s` …）—— 用户能敲的那些字符串。"""
+    return {opt for p in _run_params() for opt in (*p.opts, *p.secondary_opts)}
+
+
 def test_provider_flag_is_accepted_by_the_cli(tmp_path):
-    """`--provider` 要能解析到 —— 拼错的参数名 typer 会直接报错。"""
-    result = CliRunner().invoke(app, ["run", "--help"])
-    assert "--provider" in result.output
-    assert "--model" in result.output
-    assert "-m" in result.output
+    r"""`--provider` 要能解析到 —— 拼错的参数名 typer 会直接报错。
+
+    判据是**参数列表**，不是 help 文本 —— 后者随环境变，而且变得很难看：
+
+    CI 上 `GITHUB_ACTIONS=true`（runner 自己设的），typer 的 rich_utils 拿它
+    当"强制着色"的信号，于是 help 里带 ANSI。同时它的 OptionHighlighter 两条
+    正则都命中 `--provider`，rich 把 token 切成两个 span，ANSI 正好插在
+    两个连字符中间：
+
+        \x1b[1;36m-\x1b[0m\x1b[1;36m-provider\x1b[0m
+
+    于是裸串 `--provider` 在出口文本里**不存在**。本地无该变量 → 过，
+    CI → 红。(窄终端 COLUMNS 也会让它在连字符处折行，同样不过。)
+    """
+    flags = _run_flags()
+    assert "--provider" in flags
+    assert "--model" in flags
+    assert "-m" in flags
 
 
 def test_missing_key_through_the_cli_is_exit_code_2(tmp_path):
@@ -159,13 +190,7 @@ def test_the_cli_has_no_api_key_option():
     判据是**真实的参数列表**，不是 help 文本 —— help 里恰好有一句
     "刻意没有 --api-key 参数"，按字符串找会自己骗自己。
     """
-    import typer.main
-
-    # 鸭子类型而不是 isinstance：typer 的 TyperGroup **不是** click.Group 的子类
-    # （实测 isinstance 判 False），断言具体类型会变成测 typer 的内部结构。
-    commands = getattr(typer.main.get_command(app), "commands", None)
-    assert commands is not None, "CLI 的形状变了，这条测试需要重写"
-    params = {p.name for p in commands["run"].params}
+    params = {p.name for p in _run_params()}
     assert not [n for n in params if "api" in n and "key" in n], params
 
 
