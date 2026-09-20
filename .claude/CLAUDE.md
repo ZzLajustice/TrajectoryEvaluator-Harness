@@ -57,7 +57,6 @@
 | 系统设计、架构决策与理由、风险清单 | [docs/superpowers/specs/2026-09-14-agent-eval-harness-design.md](docs/superpowers/specs/2026-09-14-agent-eval-harness-design.md) |
 | 每个依赖为什么选它、版本约束、核实证据 | [docs/tech-stack.md](docs/tech-stack.md) |
 | 分任务的 TDD 实现步骤（含真实代码与命令） | [docs/superpowers/plans/](docs/superpowers/plans/)（Part 1/2/3） |
-| 逐任务的教学讲解（五节式：目标/流程/实现/技术栈/工程思想） | [docs/learning/](docs/learning/) |
 
 ## 关键技术决策（已论证，不要随手推翻）
 
