@@ -494,6 +494,46 @@ pytest，现在能），但**三条 ok → fail 的回归解释不了** —— �
 4. **`trap_context_pressure` 三次全败**是唯一一条稳定的信号，
    而它恰好是那个"机制确认触发"的陷阱。1 条用例支撑不起"陷阱有效"的结论
 
+#### 1.6.10 可移植性：真的 clone 一份出来跑过（2026-09-20）
+
+**做法**：`git clone` 到临时目录 → `uv sync --all-groups` → 跑全部命令。
+不是读代码推断，是把它当成别人的机器。
+
+**当时不能用的三件事**（都已修）：
+
+| 现象 | 真因 |
+|---|---|
+| `suites/codefix` 报 **19 条 `llm_error`**，看起来像项目坏了 | 默认 provider 是 `fake` 而用例没有 `fake_script`。`FakeProvider` 对**空**脚本抛 `IndexError('script exhausted')` —— 那是给"agent 多调了一次模型"设计的。**空脚本不是"用尽了"**，但两者同一个报错 |
+| 终端脚注 4 条指标、HTML 脚注 5 条 | `METRIC_DEFINITIONS` **定义了两遍**（`terminal.py` 与 `html.py`），加 `reasoning_tokens` 时只加进了一份 |
+| README 的 `ci` 示例指向 `baselines/v1.json`，文件不存在 | 示例是照理想写的，没人跑过 |
+
+**还有一条只有 clone 才能发现的**：`test_a_real_provider_still_passes_preflight_without_a_script`
+在开发机上过、在干净 clone 上**红** —— 因为它调的是整个 `_preflight`，
+而它会对真 provider 去解析凭据；开发机有个 `.env` 放着 key。
+**那条测试真正断言的是"我这儿有 API key"。**
+
+> 这一条值得单独记：**本机上绿、换台机器就红**的测试，靠本机跑一万遍也发现不了。
+> 它是项目里第一个"必须换环境才能暴露"的失败。
+
+**修完之后验到的**（干净 clone，无 API key、无本地状态）：
+
+| | |
+|---|---|
+| 四道门 | **1210 passed** / ruff 绿 / pyright 0 / lint-imports 10 kept |
+| 五个 CLI 命令 | `run` / `trace` / `report` / `diff` / `ci` 全通 |
+| 离线可跑的 suite | `hello` / `traps` / `judged`（**含 judge 与 MetaEvaluator**）/ `concurrency` |
+| 数据流水线 | `scripts/build_cases.py --check` —— 19 条补丁双向验证全过 |
+| 换行 | `.gitattributes` 的 `* text=auto eol=lf` 保证检出是 LF，vendored 补丁打得上去 |
+
+**仍然没验证的**：
+
+1. **只在 Windows 上 clone 过。** Linux / macOS 上 `uv sync` 与 `pytest` 能不能过
+   **没有人跑过** —— 见 §4.2 的 "Linux CI 覆盖"。这是可移植性里唯一没底的一块
+2. **真模型路径在干净 clone 上没跑过**（要 key）。但代码与数据都随仓库走，
+   本机上端到端跑通过三次，没有理由不同
+3. **Python 版本**：本机 clone 时 uv 用的是 3.12（`requires-python >= 3.12`）。
+   别的版本没试过
+
 ### 1.7 其它未验证项
 
 - **Windows 进程树杀死**：单测覆盖（含孙进程），但从未在真实模型触发的
