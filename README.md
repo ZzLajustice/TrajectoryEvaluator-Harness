@@ -16,34 +16,44 @@
 
 ```bash
 uv sync --all-groups
-
-# 1) 最小闭环：假 provider，零网络零成本
-uv run harness run -s examples/hello.yaml --evaluate
-
-# 2) 回归门禁（退出码 0 通过 / 1 未达标 / 2 配置错 / 3 超预算 / 4 缺基线）
-#    traps 是脚本化的 9 条失败模式，离线且确定性 —— 基线已随仓库提供
-uv run harness run -s examples/traps.yaml --evaluate
-uv run harness ci -s examples/traps.yaml --baseline baselines/traps.json --fail-under 0.5
-
-# 3) 19 条 codefix 用例（含 2 条真实 OSS 仓库）+ 自包含 HTML 报告
-#    ★ 这一条需要真模型：key 从环境变量或 .env 读，刻意没有 --api-key
-uv run harness run -s suites/codefix --evaluate --repeat 3 \
-    -m deepseek-flash --provider deepseek --max-cost 2.0
-uv run harness report --format html --out report.html
 ```
 
-### 哪些命令不需要 API key
+### 没有 API key
 
-| 命令 | 需要 key | 说明 |
-|---|---|---|
-| `run -s examples/hello.yaml` | 否 | 最小闭环，1 条用例 |
-| `run -s examples/traps.yaml` | 否 | 9 条脚本化失败模式，确定性 |
-| `run -s examples/judged.yaml` | 否 | **双 harness 对称性** + `MetaEvaluator` 的离线演示 |
-| `run -s examples/concurrency.yaml` | 否 | 并发压测 |
-| `run -s suites/codefix` | **是** | 19 条真实用例 —— 不给 `-m/--provider` 会在启动时报配置错 |
-| `run -s examples/deepseek.yaml` | **是** | 真 provider 冒烟 |
+全部业务链路都能跑 —— 用假 provider，零网络、零成本、结果确定性。
+
+| 能做什么 | 命令 |
+|---|---|
+| 最小闭环（1 条用例） | `uv run harness run -s examples/hello.yaml --evaluate` |
+| **双 harness 对称**（judge + 元评测） | `uv run harness run -s examples/judged.yaml --evaluate` |
+| 9 条脚本化失败模式 | `uv run harness run -s examples/traps.yaml --evaluate` |
+| 并发压测 | `uv run harness run -s examples/concurrency.yaml` |
+| 报告（终端 / HTML） | `uv run harness report -f html --out report.html` |
+| 回归门禁 | `uv run harness ci -s examples/traps.yaml --baseline baselines/traps.json --fail-under 0.5` |
+| 轨迹 / 对比 | `uv run harness trace --run-id <id>` · `uv run harness diff --baseline <a> --current <b>` |
+| 校验用例集可解性 | `uv run python scripts/build_cases.py --check` |
+| 全部测试 | `uv run pytest` |
+
+### 有 API key
+
+多出来的是**评测真实模型**这件事本身 —— 没有被测对象就没有评测。
+
+```bash
+cp .env.example .env          # 填上 DEEPSEEK_API_KEY
+```
+
+| 能做什么 | 命令 |
+|---|---|
+| 真 provider 冒烟 | `uv run harness run -s examples/deepseek.yaml -m deepseek-flash --provider deepseek` |
+| **19 条 codefix 用例**（含 2 条真实 OSS 仓库），约 $0.07 / 次 | `uv run harness run -s suites/codefix --evaluate -m deepseek-flash --provider deepseek` |
+| 多次采样看 flaky（`--repeat 3` ≈ $0.22） | 上面加 `--repeat 3` |
+| 真模型 judge + 元评测 | `uv run harness run -s examples/judged_deepseek.yaml --evaluate` |
+
+> 不给 `-m/--provider` 的话（默认是假 provider）会在**启动时**报配置错并说明原因，
+> 而不是给你 19 条 `llm_error`。
 
 五个命令：`run` / `trace` / `report` / `diff` / `ci`。
+缺 key / 配错套件一律是**配置错误（退出码 2）**，并在消息里点名它试过哪几个变量。
 
 ---
 
