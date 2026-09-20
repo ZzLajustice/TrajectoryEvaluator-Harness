@@ -14,7 +14,18 @@
 
 ## 快速开始
 
-本项目用 [uv](https://docs.astral.sh/uv/) 管环境与依赖。装好 uv 后：
+本项目用 [uv](https://docs.astral.sh/uv/) 管环境与依赖。uv 安装指令：
+
+```bash
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows PowerShell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+其他装法（brew / winget / pipx / pip）见[官方文档](https://docs.astral.sh/uv/getting-started/installation/)。
+装好后：
 
 ```bash
 uv sync --all-groups        # 建环境并装依赖
