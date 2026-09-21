@@ -159,7 +159,7 @@ outcome_pass   隐藏验收测试通过（结果分）
 
 harness 不只评测自研 agent。任何能产出 OTel GenAI 风格轨迹的系统都能通过一个 adapter
 接进来，然后立刻获得全部评测能力 —— 因为 `Trajectory` 是评测器与 agent 之间**唯一**的
-交互面，adapter 只需要认识 L0。
+交互面，adapter 只需要认识 `events/` 与 `contracts/`。
 
 `adapters/otel_jsonl.py` 读 OTel GenAI 风格 JSONL，`events/otel.py` 是投影层。
 **OTel 命名只活在这两个文件里**（有测试盯着）：`gen_ai.*` 属性至今没有一个达到 Stable，
@@ -170,17 +170,33 @@ harness 不只评测自研 agent。任何能产出 OTel GenAI 风格轨迹的系
 ## 项目架构
 
 ```
-L1  CLI              harness run / trace / report / diff / ci
-L2  Orchestration    suite loader → scheduler → aggregator → judge runner
-L3  Core             Agent Loop · Pipeline · Budget · Context · Tool Registry
+L5  cli              harness run / trace / report / diff / ci
+L4  orchestration    组装层：suite loader → scheduler → aggregator → judge runner
+                     · baseline diff（唯一允许 import 一切的层，依赖注入落点）
+L3  report/          终端报告 · 自包含 HTML（ECharts 内联）
+L2  core/            Agent Loop · Pipeline · Budget · Context · Tool Registry
                      · Middleware · Executors
-    Evaluators · report/ · adapters/ · store/ · providers/ · testing/
-L0  events/  ←  contracts/          叶子层，不 import 任何上层
+    store/           JSONL 轨迹 · SQLite 索引 · 快照
+    providers/       fake · openai_compat · 录制回放
+    evaluators/      6 个评测器 + 调度器
+    adapters/        OTel GenAI JSONL 投影
+    testing/         TrajectoryBuilder（对外发布的产品能力）
+L1  contracts/       JudgeClient · CommandRunner · spec / 结果类型 · 定价
+L0  events/          事件模型 · 只读 Trajectory · 推理内容
 ```
 
-**L0 是叶子层**：`events/` 只能 import 自己；`contracts/` 只能向下 import `events`。
-其他层只许向下依赖 L0。真实的依赖图是 **DAG 而不是全序**（`report → store` 成立，
-而 `core` 与 `report` 互不可见），所以约束写成逐包的 `forbidden` 契约而不是层序。
+**L0 是叶子层**：`events/` 只能 import 自己（+ 标准库 + pydantic）；
+`contracts/` 只能向下 import `events`。L0 与 L1 合起来是项目的**契约面**——
+纯类型与协议，零逻辑。
+
+层编号定死在 `tests/test_architecture.py::LAYERS`，有测试盯着它覆盖磁盘上的每一个包。
+**依赖白名单不在 README 复述** —— 那是同文件 `ALLOWED_IMPORTS` 的逐包清单，
+抄一份到这里必然漂移。
+
+⚠️ **别读成「上层可以 import 下面每一层」，也别读成「同层可以互相 import」。**
+真实依赖图是 **DAG 而不是全序**：`report → store` 成立，而 `core` 与 `report`
+**互不可见**；同处 L2 的 `evaluators → core` 则被明令禁止。任何线性排列都会放行
+一条白名单不认的边 —— 所以 import-linter 契约写成逐包的 `forbidden` 而不是层序。
 
 ### 架构约束是**可执行的**，不是文档承诺
 
@@ -197,7 +213,7 @@ import 一下 core 省事」就够了）。而「刻意冗余」只有在两份*
 
 ### 两处依赖倒置
 
-`evaluators/` 与 `core/` 零耦合，靠两个住在 L0 的协议实现：
+`evaluators/` 与 `core/` 零耦合，靠两个住在 `contracts/` 的协议实现：
 
 | 协议 | 让评测器能做什么 | 真实实现住在哪 |
 |---|---|---|
